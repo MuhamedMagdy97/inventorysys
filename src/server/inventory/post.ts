@@ -288,6 +288,10 @@ function normalize(ctx: Ctx, input: PostInput, l: Leg): Norm {
 async function validateRefs(tx: Tx, ctx: Ctx, legs: Norm[]) {
   const companyId = ctx.companyId;
   const ids = (f: (l: Norm) => string | null) => [...new Set(legs.map(f).filter((x): x is string => !!x))];
+  // Share locks pair with the FOR UPDATE an archive takes (WH-02/03): an archive waits
+  // for in-flight postings, and a posting after it sees `archived` and is rejected.
+  await tx.$executeRaw`SELECT 1 FROM warehouse WHERE id = ANY(${ids((l) => l.warehouseId)}::text[]) ORDER BY id FOR SHARE`;
+  await tx.$executeRaw`SELECT 1 FROM bin WHERE id = ANY(${ids((l) => l.binId)}::text[]) ORDER BY id FOR SHARE`;
   const [variants, warehouses, bins, batches] = await Promise.all([
     tx.productVariant.findMany({ where: { companyId, id: { in: ids((l) => l.variantId) } }, include: { product: true } }),
     tx.warehouse.findMany({ where: { companyId, id: { in: ids((l) => l.warehouseId) } } }),
@@ -295,13 +299,16 @@ async function validateRefs(tx: Tx, ctx: Ctx, legs: Norm[]) {
     tx.batch.findMany({ where: { companyId, id: { in: ids((l) => l.batchId) } } }),
   ]);
   const V = new Map(variants.map((v) => [v.id, v]));
-  const W = new Set(warehouses.map((w) => w.id));
+  const W = new Map(warehouses.map((w) => [w.id, w]));
   const B = new Map(bins.map((b) => [b.id, b]));
   const T = new Map(batches.map((b) => [b.id, b]));
   for (const l of legs) {
     const v = V.get(l.variantId);
     if (!v || !W.has(l.warehouseId)) throw new AppError("not_found", "Variant or warehouse not found");
     if (l.binId && B.get(l.binId)?.warehouseId !== l.warehouseId) throw new AppError("not_found", "Bin not found in warehouse");
+    if (W.get(l.warehouseId)!.status === "archived" || (l.binId && B.get(l.binId)!.archived)) {
+      throw new AppError("archived_conflict", "Warehouse or bin is archived", { warehouseId: l.warehouseId, binId: l.binId });
+    }
     if (l.batchId && T.get(l.batchId)?.variantId !== l.variantId) throw new AppError("not_found", "Batch not found for variant");
     if (v.product.requiresBatch !== !!l.batchId) {
       throw new AppError("validation_error", v.product.requiresBatch ? "Batch required for this product" : "Product is not batch-tracked");

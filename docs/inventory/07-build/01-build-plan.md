@@ -54,18 +54,19 @@ Spec: 02, 18, 26, 19 (INV-006, 013, 018, 020, 024).
 - [x] T2.6 Settings table + company settings page (currency, timezone, TTLs, tolerances; approval limits live on role grants).
 - [x] Gate: scope isolation (a user on warehouse A can't read or post warehouse B through any endpoint), creator≠approver helper, permission re-check at post time, audit completeness → `src/app/api/scope.test.ts`, `src/server/auth/auth.test.ts`.
 
-## Part 3 — Catalog, suppliers, warehouses (closes P2 + P3 gates)
+## Part 3 — Catalog, suppliers, warehouses (closes P2 + P3 gates) — tasks ✅ 2026-10-04; tag `part-3` after CI is green
 Spec: 04, 05, 06, 22, flows 1–5, edge #3–8, #24.
-- T3.1 Full product/variant model: categories (tree, max depth 5, cycle guard), brands, UOM + effective-dated conversions, `sku_alias`/`barcode_alias`, images, `variant_warehouse_settings`, lifecycle states.
-- T3.2 Suppliers + contacts/addresses/products/documents, lifecycle, archive guard SUP-01.
-- T3.3 Warehouses/bins full (zone/rack/shelf optional), staff assignment, archive guards WH-02/03.
-- T3.4 Scan lookup `POST /api/products:lookup` (SKU/barcode/alias, never auto-pick on ambiguity).
-- T3.5 UI: products list/detail tabs, categories/brands, suppliers, warehouses + bin tree.
-- Gate: SKU immutability + alias flow, barcode alias window, archive-blocked-with-stock, category cycle rejected.
+- [x] T3.1 Full product/variant model: categories (tree, max depth 5, cycle guard), brands, UOM + effective-dated conversions, `sku_alias`/`barcode_alias`, images, `variant_warehouse_settings`, lifecycle states.
+- [x] T3.2 Suppliers + contacts/addresses/products/documents, lifecycle, archive guard SUP-01 (open-PO check lands with the PO table, T4.1).
+- [x] T3.3 Warehouses/bins full (zone/rack/shelf optional), staff assignment, archive guards WH-02/03 (stock + reservations now; open receipts/transfers/counts join in Parts 4/6/8). Postings take `FOR SHARE` on warehouse/bin rows, archive takes `FOR UPDATE`, so archive-vs-post races have one winner.
+- [x] T3.4 Scan lookup `POST /api/products/lookup` (SKU/barcode/alias, never auto-pick on ambiguity).
+- [x] T3.5 UI: products list/detail tabs, categories/brands, suppliers, warehouses + bin tree.
+- Gate: SKU immutability + alias flow, barcode alias window, archive-blocked-with-stock, category cycle rejected → `src/server/catalog/catalog.test.ts`, `src/server/warehouses/warehouses.test.ts`, `src/server/suppliers/suppliers.test.ts`, `src/app/api/catalog.test.ts`.
+- Deferred: image/document **uploads** (URL only for now; allowlist + size caps with imports, Part 8); stock migration for a replaced SKU uses the Part 6 adjustment.
 
 ## Part 4 — Purchasing + receiving (closes P5 gate)
 Spec: 09, 10, 14 §3 (serial capture), 23 (PO), flows 6–8, edge #1, 9, 21, 22, 27, 36.
-- T4.1 PO lifecycle (state machine helper with `version`, reused by every later document): draft→…→closed, reject→draft, cancel guard, approval limits.
+- T4.1 PO lifecycle (state machine helper with `version`, reused by every later document): draft→…→closed, reject→draft, cancel guard, approval limits. Also: SUP-01 open-PO check in `updateSupplier` archive, SUP-02 contact+address before first approval, open PO lines in product archive guard, open receipts in WH-02; PO lines use `assertTransactable` + `uomFactor` (Part 3).
 - T4.2 GRN posting: partials, tolerance, damaged/expired splits, excess → `blocked_in` + decision, wrong product, UOM conversion snapshot, batch/expiry capture, serial capture (`serial_unit` + I-06).
 - T4.3 Receipt reversal document (never void).
 - T4.4 UI: PO list/detail/wizard, receiving wizard (scan-friendly).

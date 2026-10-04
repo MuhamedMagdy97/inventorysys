@@ -1,12 +1,12 @@
 # 06 — Warehouses & Locations
 
 ## 1. Hierarchy
-`warehouse → zone → rack → shelf → bin`. MVP requires `warehouse + bin`; zone/rack/shelf optional levels (nullable FKs on bin). Each bin: `warehouse_id, zone_id?, rack_id?, shelf_id?, code (unique per warehouse), type (sellable|receiving|quarantine|damaged), is_default_sellable, is_default_receiving, archived`.
+`warehouse → zone → rack → shelf → bin`. MVP requires `warehouse + bin`; zone/rack/shelf are optional location codes stored on the bin (nullable `zone`, `rack`, `shelf` columns; the bin tree groups by them — promote to tables only if levels ever need their own attributes). Each bin: `warehouse_id, zone?, rack?, shelf?, code (unique per warehouse), type (sellable|receiving|quarantine|damaged), is_default_sellable, is_default_receiving, archived`.
 
 **warehouse:** id, code (unique, e.g., WH-DXB-01), name, address, manager_user_id, status (`active|inactive|archived`), default receiving/quarantine bins.
 
 ## 2. Rules
-- WH-01: Bin codes unique within warehouse; quarantine + damaged bins auto-created per warehouse and cannot be archived.
+- WH-01: Bin codes unique within warehouse; quarantine + damaged bins auto-created per warehouse; a warehouse always keeps ≥1 active quarantine and ≥1 active damaged bin, and the default sellable/receiving bins cannot be archived (make another bin the default first).
 - WH-02: Archive warehouse blocked if any `stock_balance` with (on_hand|damaged|expired|blocked) > 0, any `stock_allocation.qty_reserved` > 0, any open transfer/receipt/count, or any active reservation references it. Must empty + close first.
 - WH-03: Archive bin blocked if balance > 0 on it. Move stock first (transfer or adjustment with audit).
 - WH-04: Users restricted via `user_warehouses`. Every stock action validates `warehouse_id ∈ assigned` (or all-access role).

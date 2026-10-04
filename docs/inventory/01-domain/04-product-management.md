@@ -18,10 +18,11 @@ brand 1→many products; category 1→many products; product 1→many variants; 
 - P-CAT-01: SKU globally unique, immutable once stock exists. "Rename SKU" = create new variant + migrate with adjustment + alias record (`sku_alias old→new`).
 - P-CAT-02: Barcode unique if present; changed barcodes keep the old value in `sku_alias`-equivalent `barcode_alias` for 30 days (configurable) so in-flight labels still scan; rescan resolves to exactly one variant or prompts disambiguation (never auto-pick).
 - P-CAT-03: Parent with variants cannot have own SKU/stock/price.
-- P-CAT-04: `is_serialized=true` ⇒ each unit tracked individually; receiving/sale qty must reconcile to serial count; conversions must be 1:1 to base.
+- P-CAT-04: `is_serialized=true` ⇒ each unit tracked individually; receiving/sale qty must reconcile to serial count; base UOM is a discrete unit and every conversion factor is a whole number (a box of 12 = 12 serials), so base quantities are always integers.
 - P-CAT-05: Enabling batch/expiry/serial after transactions requires backfill migration + approval; disabling blocked if balances/batches/serials exist.
 - P-CAT-06: Discontinued ⇒ block new POs/reservations; existing reservations fulfil normally; on_hand may sell through or be written off.
 - P-CAT-07: Archived ⇒ hidden from selectors, block ALL new transactions; history retained.
+- P-CAT-09: Draft/inactive ⇒ block new POs/reservations/receipts (`archived_conflict`, "not active") like archived, but reversible (draft→active, inactive↔active). Status applies at product and variant level; the stricter of the two wins.
 - P-CAT-08: UOM conversion factor change creates new effective-dated record; history keeps old factor snapshot on each movement (`uom_factor_used`).
 
 ## 5. Validation

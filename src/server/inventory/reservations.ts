@@ -1,4 +1,5 @@
 import type { InventoryMovement, Reservation, ReservationLine } from "@/generated/prisma/client";
+import { assertTransactable } from "@/server/catalog/catalog";
 import { writeAudit } from "@/server/core/audit";
 import { requirePermission, type Ctx } from "@/server/core/ctx";
 import { AppError } from "@/server/core/errors";
@@ -38,13 +39,9 @@ export async function reserve(
     tx.warehouse.findFirst({ where: { id: input.warehouseId, companyId: ctx.companyId } }),
   ]);
   if (!variant || !warehouse) throw new AppError("not_found", "Variant or warehouse not found");
-  // INV-019
-  if (warehouse.status !== "active" || variant.status === "archived" || variant.product.status === "archived") {
-    throw new AppError("archived_conflict", "Variant or warehouse is not active");
-  }
-  if (variant.status === "discontinued" || variant.product.status === "discontinued") {
-    throw new AppError("discontinued_conflict", "Variant is discontinued");
-  }
+  // INV-019, P-CAT-06/07/09
+  if (warehouse.status !== "active") throw new AppError("archived_conflict", "Warehouse is not active");
+  assertTransactable(variant);
 
   // Candidate positions, FEFO (expiry ASC, then batch_no); expired batches are unreservable (B-04).
   let candidates: (string | null)[] = [null];

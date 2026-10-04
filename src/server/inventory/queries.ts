@@ -56,3 +56,31 @@ export async function listMovements(
   ]);
   return { total, page: input.page, perPage: input.perPage, items };
 }
+
+// Per (variant, warehouse) in the caller's scope: physical buckets, reserved, available
+// and the reorder flag from variant_warehouse_settings (edge #37). For catalog screens.
+// ponytail: available here ignores the expired-batch rule (B-04); getAvailability is exact.
+export async function stockSummary(ctx: Ctx, variantIds: string[]) {
+  await requirePermission(ctx, "inventory.view");
+  const where = { companyId: ctx.companyId, variantId: { in: variantIds }, warehouseId: scopeFilter(ctx) };
+  const [balances, allocations, settings] = await Promise.all([
+    db.stockBalance.groupBy({ by: ["variantId", "warehouseId"], where, _sum: { onHand: true, blocked: true, damaged: true, expired: true } }),
+    db.stockAllocation.groupBy({ by: ["variantId", "warehouseId"], where, _sum: { qtyReserved: true } }),
+    db.variantWarehouseSettings.findMany({ where }),
+  ]);
+  const key = (r: { variantId: string; warehouseId: string }) => `${r.variantId}|${r.warehouseId}`;
+  const rows = new Map<string, { variantId: string; warehouseId: string; onHand: number; blocked: number; damaged: number; expired: number; reserved: number; reorderPoint: number | null }>();
+  const row = (r: { variantId: string; warehouseId: string }) => {
+    const k = key(r);
+    if (!rows.has(k)) rows.set(k, { variantId: r.variantId, warehouseId: r.warehouseId, onHand: 0, blocked: 0, damaged: 0, expired: 0, reserved: 0, reorderPoint: null });
+    return rows.get(k)!;
+  };
+  // Display only: Number is fine for rendering; posting math stays Decimal.
+  for (const b of balances) Object.assign(row(b), { onHand: Number(b._sum.onHand ?? 0), blocked: Number(b._sum.blocked ?? 0), damaged: Number(b._sum.damaged ?? 0), expired: Number(b._sum.expired ?? 0) });
+  for (const a of allocations) row(a).reserved = Number(a._sum.qtyReserved ?? 0);
+  for (const s of settings) row(s).reorderPoint = s.reorderPoint === null ? null : Number(s.reorderPoint);
+  return [...rows.values()].map((r) => {
+    const available = r.onHand - r.reserved;
+    return { ...r, available, belowReorder: r.reorderPoint !== null && available <= r.reorderPoint };
+  });
+}

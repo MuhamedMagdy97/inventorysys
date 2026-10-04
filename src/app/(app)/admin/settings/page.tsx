@@ -13,6 +13,7 @@ async function saveSettings(_: ActionState, form: FormData): Promise<ActionState
     timezone: String(form.get("timezone") ?? ""),
     reservationTtlSeconds: Math.round(Number(form.get("reservationTtlHours")) * 3600),
     receiptTolerancePct: Number(form.get("receiptTolerancePct")),
+    barcodeAliasDays: Number(form.get("barcodeAliasDays")),
   }));
 }
 
@@ -40,6 +41,10 @@ export default async function SettingsPage() {
             <label className="label">
               Receiving over-delivery tolerance (%)
               <input name="receiptTolerancePct" type="number" min={0} max={100} step="0.1" defaultValue={s.receiptTolerancePct} required className="input" />
+            </label>
+            <label className="label">
+              Old barcodes keep scanning for (days)
+              <input name="barcodeAliasDays" type="number" min={0} max={365} step={1} defaultValue={s.barcodeAliasDays} required className="input" />
             </label>
           </div>
           <p className="text-xs text-muted">Approval limits are set per role grant on the Roles page.</p>

@@ -153,7 +153,7 @@ test("users/roles are company-bound by the DB (composite FKs)", async () => {
 });
 
 test("T2.6 + audit: settings defaults, validation, update audited; reserve uses the TTL", async () => {
-  expect(await getSettings(w.ctx)).toEqual({ currency: "USD", timezone: "UTC", reservationTtlSeconds: 172800, receiptTolerancePct: 0 });
+  expect(await getSettings(w.ctx)).toEqual({ currency: "USD", timezone: "UTC", reservationTtlSeconds: 172800, receiptTolerancePct: 0, barcodeAliasDays: 30 });
   await expect(transaction((tx) => updateSettings(tx, w.ctx, { currency: "usd" }))).rejects.toThrow();
   await transaction((tx) => updateSettings(tx, w.ctx, { currency: "EUR", timezone: "Africa/Cairo", reservationTtlSeconds: 3600 }));
   const [a] = await audits(w.company.id, "update");
