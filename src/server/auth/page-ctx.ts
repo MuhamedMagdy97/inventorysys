@@ -25,19 +25,22 @@ export type ActionState = { ok?: string; error?: string; at?: number } | null;
 
 // One mutating Server Action: session ctx → domain fn in a transaction (execute) →
 // refresh the page. Domain errors come back as a message for <ActionForm>.
-export async function runAction(
+export async function runAction<T>(
   scope: string,
-  fn: (tx: Tx, ctx: Ctx) => Promise<unknown>,
+  fn: (tx: Tx, ctx: Ctx) => Promise<T>,
   ok = "Saved",
+  redirectTo?: (result: T) => string, // e.g. to the record just created
 ): Promise<ActionState> {
   const ctx = await pageCtx();
+  let result: T;
   try {
-    await execute(ctx, { scope }, (tx) => fn(tx, ctx));
+    result = (await execute(ctx, { scope }, (tx) => fn(tx, ctx))) as T;
   } catch (e) {
     if (e instanceof AppError) return { error: e.message, at: Date.now() };
     if (e && typeof e === "object" && "issues" in e) return { error: "Invalid input", at: Date.now() };
     throw e;
   }
+  if (redirectTo) redirect(redirectTo(result));
   refresh();
   return { ok, at: Date.now() };
 }

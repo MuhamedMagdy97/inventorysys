@@ -66,6 +66,13 @@ export async function updateUserAccess(
   if (before.id === ctx.userId && input.status === "disabled") {
     throw new AppError("validation_error", "You cannot disable your own account");
   }
+  if (input.status === "disabled" && before.status !== "disabled") {
+    // Doc 06 §4: a warehouse manager who leaves is replaced first.
+    const managed = await tx.warehouse.findMany({ where: { managerUserId: before.id, status: { not: "archived" } }, select: { code: true } });
+    if (managed.length) {
+      throw new AppError("conflict", `Assign a new manager to ${managed.map((w) => w.code).join(", ")} first`, { reason: "is_manager" });
+    }
+  }
   await checkAccess(tx, ctx, input, before.id);
 
   const bumped = await tx.user.updateMany({

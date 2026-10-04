@@ -3,7 +3,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import { db, transaction, type Tx } from "@/server/db";
 import { writeAudit } from "./audit";
 import type { Ctx } from "./ctx";
-import { AppError } from "./errors";
+import { AppError, fromDbError } from "./errors";
 
 type Json = Prisma.JsonValue;
 
@@ -47,7 +47,8 @@ export async function execute(
       });
       return saved.response; // the stored jsonb, so first call and replays are byte-identical
     });
-  } catch (e) {
+  } catch (thrown) {
+    const e = fromDbError(thrown) ?? thrown;
     if (e instanceof AppError && DENIED.has(e.code)) {
       await writeAudit(db, ctx, {
         action: "transition.denied",

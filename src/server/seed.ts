@@ -4,6 +4,7 @@ import { createProduct } from "@/server/catalog/catalog";
 import type { Ctx } from "@/server/core/ctx";
 import { transaction, type Tx } from "@/server/db";
 import { seedRoles } from "@/server/users/roles";
+import { seedUoms } from "@/server/catalog/taxonomy";
 import { createWarehouse } from "@/server/warehouses/warehouses";
 
 // One company with its 12 seed roles, a system user, a super_admin ("Admin"), one
@@ -15,6 +16,7 @@ export async function seedCompany(name: string, opts: { adminEmail?: string; adm
   const { company, system, admin, roles } = await transaction(async (tx) => {
     const company = await tx.company.create({ data: { name } });
     const roles = await seedRoles(tx, company.id);
+    await seedUoms(tx, company.id);
     const system = await tx.user.create({
       data: { companyId: company.id, name: "system", email: `system+${company.id}@system.invalid`, isSystem: true },
     });
@@ -28,7 +30,7 @@ export async function seedCompany(name: string, opts: { adminEmail?: string; adm
   const { warehouse, variants } = await transaction(async (tx) => {
     const warehouse = await createWarehouse(tx, ctx, { code: "WH-MAIN-01", name: "Main warehouse" });
     const product = await createProduct(tx, ctx, {
-      name: "Demo T-shirt",
+      name: "Demo T-shirt", type: "variant_parent",
       variants: [{ sku: "TSHIRT-RED-M" }, { sku: "TSHIRT-BLUE-M" }],
     });
     return { warehouse, variants: product.variants };

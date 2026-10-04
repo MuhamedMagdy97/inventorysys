@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AppError, ERROR_STATUS } from "./errors";
+import { AppError, ERROR_STATUS, fromDbError } from "./errors";
 
 type Handler<P> = (req: Request, extra: { params: P; requestId: string }) => Promise<unknown>;
 
@@ -26,6 +26,8 @@ export function withApi<P = Record<string, string>>(handler: Handler<P>) {
 export function toAppError(err: unknown): AppError {
   if (err instanceof AppError) return err;
   if (err instanceof z.ZodError) return new AppError("validation_error", "Invalid input", err.issues);
+  const db = fromDbError(err);
+  if (db) return db;
   // Unknown failure: don't leak internals. ponytail: no 500 code in the spec list; `conflict` + log.
   return new AppError("conflict", "Unexpected error");
 }

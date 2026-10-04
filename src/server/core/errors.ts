@@ -31,3 +31,24 @@ export class AppError extends Error {
     return ERROR_STATUS[this.code];
   }
 }
+
+// INV-023 optimistic lock: an `updateMany({ where: { id, version } })` that matched nothing.
+export function assertVersion(res: { count: number }, entity: string, currentVersion?: number) {
+  if (res.count === 0) throw new AppError("version_conflict", `${entity} was changed by someone else`, { currentVersion });
+}
+
+// DB constraints are the last line of defence (tech-stack rule 2); surface their
+// violations as spec codes instead of a generic failure.
+export function fromDbError(e: unknown): AppError | null {
+  const err = e as { code?: string; meta?: { driverAdapterError?: { cause?: { originalCode?: string; originalMessage?: string; constraint?: { index?: string } } } } };
+  const cause = err?.meta?.driverAdapterError?.cause;
+  const pg = cause?.originalCode;
+  if (err?.code === "P2002" || pg === "23505") {
+    const constraint = cause?.constraint?.index ?? cause?.originalMessage?.match(/"([^"]+)"/)?.[1];
+    return new AppError("duplicate", "Already exists", { field: constraint?.match(/_([a-z]+)_key$/)?.[1], constraint });
+  }
+  if (pg === "23514" || pg === "23503") {
+    return new AppError("validation_error", "Rejected by a database rule", { constraint: cause?.originalMessage?.match(/constraint "([^"]+)"/)?.[1] });
+  }
+  return null;
+}

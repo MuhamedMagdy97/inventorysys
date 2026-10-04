@@ -40,6 +40,10 @@ model Company {
   userRoles          UserRole[]
   userWarehouses     UserWarehouse[]
   settings           Setting[]
+  categories         Category[]
+  brands             Brand[]
+  uoms               Uom[]
+  suppliers          Supplier[]
 
   @@map("company")
 }
@@ -62,12 +66,13 @@ model User {
   createdAt        DateTime   @default(now()) @map("created_at")
   updatedAt        DateTime   @default(now()) @updatedAt @map("updated_at")
 
-  company    Company         @relation(fields: [companyId], references: [id])
-  sessions   Session[]
-  accounts   Account[]
-  twofactors TwoFactor[]
-  roles      UserRole[]
-  warehouses UserWarehouse[]
+  company           Company         @relation(fields: [companyId], references: [id])
+  sessions          Session[]
+  accounts          Account[]
+  twofactors        TwoFactor[]
+  roles             UserRole[]
+  warehouses        UserWarehouse[]
+  managedWarehouses Warehouse[]     @relation("WarehouseManager")
 
   @@unique([companyId, id])
   @@index([companyId])
@@ -89,8 +94,11 @@ enum MasterStatus {
   @@map("master_status")
 }
 
+// Product/variant lifecycle (doc 23): draft → active ↔ inactive → discontinued → archived.
 enum VariantStatus {
+  draft
   active
+  inactive
   discontinued
   archived
 
@@ -107,16 +115,20 @@ enum BinType {
 }
 
 model Warehouse {
-  id        String       @id @default(uuid(7))
-  companyId String       @map("company_id")
-  code      String
-  name      String
-  status    MasterStatus @default(active)
-  version   Int          @default(0)
-  createdAt DateTime     @default(now()) @map("created_at")
+  id            String       @id @default(uuid(7))
+  companyId     String       @map("company_id")
+  code          String
+  name          String
+  address       String?
+  managerUserId String?      @map("manager_user_id")
+  status        MasterStatus @default(active)
+  version       Int          @default(0)
+  createdAt     DateTime     @default(now()) @map("created_at")
 
-  company            Company             @relation(fields: [companyId], references: [id])
+  company            Company                    @relation(fields: [companyId], references: [id])
+  manager            User?                      @relation("WarehouseManager", fields: [companyId, managerUserId], references: [companyId, id])
   bins               Bin[]
+  variantSettings    VariantWarehouseSettings[]
   stockBalances      StockBalance[]
   stockAllocations   StockAllocation[]
   variantCosts       VariantCost[]
@@ -135,9 +147,14 @@ model Bin {
   warehouseId        String   @map("warehouse_id")
   code               String
   type               BinType
+  // Optional location levels (doc 06 §1): plain codes, the bin tree groups by them.
+  zone               String?
+  rack               String?
+  shelf              String?
   isDefaultSellable  Boolean  @default(false) @map("is_default_sellable")
   isDefaultReceiving Boolean  @default(false) @map("is_default_receiving")
   archived           Boolean  @default(false)
+  version            Int      @default(0)
   createdAt          DateTime @default(now()) @map("created_at")
 
   company            Company             @relation(fields: [companyId], references: [id])
@@ -149,37 +166,75 @@ model Bin {
   @@map("bin")
 }
 
-model Product {
-  id             String        @id @default(uuid(7))
-  companyId      String        @map("company_id")
-  name           String
-  status         VariantStatus @default(active)
-  requiresBatch  Boolean       @default(false) @map("requires_batch")
-  requiresExpiry Boolean       @default(false) @map("requires_expiry")
-  isSerialized   Boolean       @default(false) @map("is_serialized")
-  baseUom        String        @default("each") @map("base_uom")
-  version        Int           @default(0)
-  createdAt      DateTime      @default(now()) @map("created_at")
+enum ProductType {
+  simple
+  variant_parent
 
-  company  Company          @relation(fields: [companyId], references: [id])
-  variants ProductVariant[]
+  @@map("product_type")
+}
+
+// Doc 04 §2. product_type, base_uom, is_serialized, requires_batch/expiry are frozen
+// after the first movement (P-CAT-05) — enforced in src/server/catalog.
+model Product {
+  id                     String        @id @default(uuid(7))
+  companyId              String        @map("company_id")
+  name                   String
+  description            String?
+  brandId                String?       @map("brand_id")
+  categoryId             String?       @map("category_id")
+  type                   ProductType   @default(simple)
+  status                 VariantStatus @default(active)
+  requiresBatch          Boolean       @default(false) @map("requires_batch")
+  requiresExpiry         Boolean       @default(false) @map("requires_expiry")
+  isSerialized           Boolean       @default(false) @map("is_serialized")
+  requiresInspection     Boolean       @default(false) @map("requires_inspection")
+  baseUom                String        @default("each") @map("base_uom")
+  trackExpiryDefaultDays Int?          @map("track_expiry_default_days")
+  tags                   String[]      @default([])
+  version                Int           @default(0)
+  createdAt              DateTime      @default(now()) @map("created_at")
+  updatedAt              DateTime      @default(now()) @updatedAt @map("updated_at")
+
+  company     Company          @relation(fields: [companyId], references: [id])
+  brand       Brand?           @relation(fields: [brandId], references: [id])
+  category    Category?        @relation(fields: [categoryId], references: [id])
+  uom         Uom              @relation(fields: [companyId, baseUom], references: [companyId, code])
+  variants    ProductVariant[]
+  conversions UomConversion[]
 
   @@index([companyId])
+  @@index([categoryId])
   @@map("product")
 }
 
 model ProductVariant {
-  id        String        @id @default(uuid(7))
-  companyId String        @map("company_id")
-  productId String        @map("product_id")
-  sku       String
-  barcode   String?
-  status    VariantStatus @default(active)
-  version   Int           @default(0)
-  createdAt DateTime      @default(now()) @map("created_at")
+  id                 String        @id @default(uuid(7))
+  companyId          String        @map("company_id")
+  productId          String        @map("product_id")
+  sku                String // upper-case (CHECK in SQL), immutable once transacted (P-CAT-01)
+  barcode            String?
+  name               String? // e.g. "Red / M"; the product name when null
+  attributes         Json          @default("{}")
+  requiresInspection Boolean       @default(false) @map("requires_inspection")
+  costPrice          Decimal?      @map("cost_price") @db.Decimal(18, 4)
+  sellPrice          Decimal?      @map("sell_price") @db.Decimal(18, 4)
+  minSellPrice       Decimal?      @map("min_sell_price") @db.Decimal(18, 4)
+  weightKg           Decimal?      @map("weight_kg") @db.Decimal(18, 4)
+  lengthCm           Decimal?      @map("length_cm") @db.Decimal(18, 4)
+  widthCm            Decimal?      @map("width_cm") @db.Decimal(18, 4)
+  heightCm           Decimal?      @map("height_cm") @db.Decimal(18, 4)
+  status             VariantStatus @default(active)
+  version            Int           @default(0)
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @default(now()) @updatedAt @map("updated_at")
 
-  company            Company             @relation(fields: [companyId], references: [id])
-  product            Product             @relation(fields: [productId], references: [id])
+  company            Company                    @relation(fields: [companyId], references: [id])
+  product            Product                    @relation(fields: [productId], references: [id])
+  skuAliases         SkuAlias[]
+  barcodeAliases     BarcodeAlias[]
+  images             ProductImage[]
+  warehouseSettings  VariantWarehouseSettings[]
+  supplierProducts   SupplierProduct[]
   batches            Batch[]
   stockBalances      StockBalance[]
   stockAllocations   StockAllocation[]
@@ -637,4 +692,260 @@ model Setting {
 
   @@id([companyId, key])
   @@map("settings")
+}
+
+// ───────────────────────── Part 3: catalog (doc 04) ─────────────────────────
+
+// Tree, max depth 5, no cycles (src/server/catalog/taxonomy.ts, under a per-company
+// advisory lock). `path` = "/Electronics/Phones/" (names; rewritten on move/rename).
+model Category {
+  id        String   @id @default(uuid(7))
+  companyId String   @map("company_id")
+  parentId  String?  @map("parent_id")
+  name      String
+  path      String
+  depth     Int // 1 = root
+  sort      Int      @default(0)
+  archived  Boolean  @default(false)
+  version   Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  company  Company    @relation(fields: [companyId], references: [id])
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  products Product[]
+
+  // Re-created NULLS NOT DISTINCT (unique root names) in the migration SQL.
+  @@unique([companyId, parentId, name], map: "category_sibling_name_key")
+  @@map("category")
+}
+
+// Name unique per company, case-insensitive (lower(name) index in the migration SQL).
+model Brand {
+  id        String   @id @default(uuid(7))
+  companyId String   @map("company_id")
+  name      String
+  logoUrl   String?  @map("logo_url")
+  archived  Boolean  @default(false)
+  version   Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  company  Company   @relation(fields: [companyId], references: [id])
+  products Product[]
+
+  @@map("brand")
+}
+
+enum UomType {
+  count
+  weight
+  volume
+  length
+
+  @@map("uom_type")
+}
+
+model Uom {
+  companyId String   @map("company_id")
+  code      String
+  name      String
+  type      UomType
+  createdAt DateTime @default(now()) @map("created_at")
+
+  company  Company   @relation(fields: [companyId], references: [id])
+  products Product[]
+
+  @@id([companyId, code])
+  @@map("uom")
+}
+
+// 1 `uom` = factor × the product's base UOM, from effective_from on (P-CAT-08). A change
+// is a new row; history is never rewritten. Movements snapshot the factor used (Part 4).
+model UomConversion {
+  id            String   @id @default(uuid(7))
+  companyId     String   @map("company_id")
+  productId     String   @map("product_id")
+  uom           String
+  factor        Decimal  @db.Decimal(18, 6)
+  effectiveFrom DateTime @map("effective_from")
+  createdBy     String   @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([productId, uom, effectiveFrom])
+  @@map("uom_conversion")
+}
+
+// P-CAT-01: a retired SKU keeps resolving to its successor variant.
+model SkuAlias {
+  companyId String   @map("company_id")
+  oldSku    String   @map("old_sku")
+  variantId String   @map("variant_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  variant ProductVariant @relation(fields: [variantId], references: [id])
+
+  @@id([companyId, oldSku])
+  @@map("sku_alias")
+}
+
+// P-CAT-02: a replaced barcode still scans until expires_at.
+model BarcodeAlias {
+  id        String   @id @default(uuid(7))
+  companyId String   @map("company_id")
+  barcode   String
+  variantId String   @map("variant_id")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  variant ProductVariant @relation(fields: [variantId], references: [id])
+
+  @@index([companyId, barcode])
+  @@map("barcode_alias")
+}
+
+// ponytail: URL only; file uploads (allowlist, size caps, edge #28) come with imports (Part 8).
+model ProductImage {
+  id        String   @id @default(uuid(7))
+  companyId String   @map("company_id")
+  variantId String   @map("variant_id")
+  url       String
+  sort      Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  variant ProductVariant @relation(fields: [variantId], references: [id])
+
+  @@index([variantId])
+  @@map("product_image")
+}
+
+// Reorder thresholds are per warehouse (doc 22, edge #37).
+model VariantWarehouseSettings {
+  companyId    String   @map("company_id")
+  variantId    String   @map("variant_id")
+  warehouseId  String   @map("warehouse_id")
+  reorderPoint Decimal? @map("reorder_point") @db.Decimal(18, 4)
+  reorderQty   Decimal? @map("reorder_qty") @db.Decimal(18, 4)
+  maxStock     Decimal? @map("max_stock") @db.Decimal(18, 4)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  warehouse Warehouse      @relation(fields: [warehouseId], references: [id])
+
+  @@id([variantId, warehouseId])
+  @@map("variant_warehouse_settings")
+}
+
+// ───────────────────────── Part 3: suppliers (doc 05) ─────────────────────────
+
+enum PaymentTerms {
+  net15
+  net30
+  net60
+  prepaid
+  cod
+
+  @@map("payment_terms")
+}
+
+enum AddressType {
+  billing
+  shipping
+  primary
+
+  @@map("address_type")
+}
+
+model Supplier {
+  id                 String       @id @default(uuid(7))
+  companyId          String       @map("company_id")
+  code               String // SUP-0001, from `sequences`
+  name               String
+  status             MasterStatus @default(active)
+  taxId              String?      @map("tax_id")
+  paymentTerms       PaymentTerms @default(net30) @map("payment_terms")
+  creditLimit        Decimal?     @map("credit_limit") @db.Decimal(18, 2)
+  currency           String // SUP-05: PO currency = supplier currency
+  leadTimeDays       Int?         @map("lead_time_days")
+  notes              String?
+  requiresInspection Boolean      @default(false) @map("requires_inspection")
+  version            Int          @default(0)
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  company   Company            @relation(fields: [companyId], references: [id])
+  contacts  SupplierContact[]
+  addresses SupplierAddress[]
+  products  SupplierProduct[]
+  documents SupplierDocument[]
+
+  @@unique([companyId, code])
+  @@map("supplier")
+}
+
+// Never deleted (INV-005); "remove" archives.
+model SupplierContact {
+  id         String   @id @default(uuid(7))
+  supplierId String   @map("supplier_id")
+  name       String
+  role       String?
+  email      String?
+  phone      String?
+  isPrimary  Boolean  @default(false) @map("is_primary")
+  archived   Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  @@map("supplier_contact")
+}
+
+model SupplierAddress {
+  id         String      @id @default(uuid(7))
+  supplierId String      @map("supplier_id")
+  type       AddressType
+  line1      String
+  line2      String?
+  city       String
+  postalCode String?     @map("postal_code")
+  country    String
+  archived   Boolean     @default(false)
+  createdAt  DateTime    @default(now()) @map("created_at")
+
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  @@map("supplier_address")
+}
+
+// SUP-03: last_price is informational; PO lines snapshot their own price.
+model SupplierProduct {
+  supplierId  String   @map("supplier_id")
+  variantId   String   @map("variant_id")
+  supplierSku String?  @map("supplier_sku")
+  lastPrice   Decimal? @map("last_price") @db.Decimal(18, 4)
+  minOrderQty Decimal? @map("min_order_qty") @db.Decimal(18, 4)
+  leadDays    Int?     @map("lead_days")
+  isPreferred Boolean  @default(false) @map("is_preferred")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  supplier Supplier       @relation(fields: [supplierId], references: [id])
+  variant  ProductVariant @relation(fields: [variantId], references: [id])
+
+  @@id([supplierId, variantId])
+  @@map("supplier_product")
+}
+
+// ponytail: URL only, like product_image.
+model SupplierDocument {
+  id         String   @id @default(uuid(7))
+  supplierId String   @map("supplier_id")
+  type       String
+  fileUrl    String   @map("file_url")
+  uploadedBy String   @map("uploaded_by")
+  uploadedAt DateTime @default(now()) @map("uploaded_at")
+
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  @@map("supplier_document")
 }

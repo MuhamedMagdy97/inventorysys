@@ -95,5 +95,6 @@ test("every API route (except health/auth) builds ctx from the request", () => {
   walk(join(process.cwd(), "src/app/api"));
   const open = routes.filter((r) => !/[\\/]api[\\/](health|auth)[\\/]/.test(r));
   expect(open.length).toBeGreaterThanOrEqual(5);
-  for (const r of open) expect(readFileSync(r, "utf8"), r).toMatch(/requestCtx\(req, requestId\)/);
+  // `mutate(req, requestId, …)` builds it too (src/app/api/mutate.ts).
+  for (const r of open) expect(readFileSync(r, "utf8"), r).toMatch(/requestCtx\(req, requestId\)|mutate\(req, requestId,/);
 });

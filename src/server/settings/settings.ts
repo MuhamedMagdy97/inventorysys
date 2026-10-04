@@ -11,6 +11,7 @@ export const SettingsSchema = z.object({
   timezone: z.string().refine((tz) => Intl.supportedValuesOf("timeZone").includes(tz) || tz === "UTC", "Unknown time zone"),
   reservationTtlSeconds: z.number().int().min(60).max(30 * 24 * 3600),
   receiptTolerancePct: z.number().min(0).max(100),
+  barcodeAliasDays: z.number().int().min(0).max(365), // P-CAT-02
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -18,6 +19,7 @@ const DEFAULTS: Omit<Settings, "currency"> = {
   timezone: "UTC",
   reservationTtlSeconds: 48 * 3600,
   receiptTolerancePct: 0,
+  barcodeAliasDays: 30,
 };
 
 // Internal read for domain code (no permission: callers already authorized their action).

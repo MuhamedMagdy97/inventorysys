@@ -7,6 +7,9 @@ import { signOutAction } from "../login/actions";
 // page and action re-checks through its domain function).
 const NAV = [
   { href: "/", label: "Home", grant: null },
+  { href: "/products", label: "Products", grant: "products.view" },
+  { href: "/suppliers", label: "Suppliers", grant: "suppliers.view" },
+  { href: "/warehouses", label: "Warehouses", grant: "warehouses.view" },
   { href: "/admin/users", label: "Users", grant: "users.view" },
   { href: "/admin/roles", label: "Roles", grant: "roles.manage" },
   { href: "/admin/audit", label: "Audit log", grant: "audit.view" },
