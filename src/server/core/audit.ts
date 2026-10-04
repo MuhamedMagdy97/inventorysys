@@ -5,7 +5,7 @@ import type { Ctx } from "./ctx";
 // A-01: always called with the business write's tx, so audit and write commit together.
 export async function writeAudit(
   tx: Tx,
-  ctx: Ctx,
+  ctx: Pick<Ctx, "companyId" | "userId" | "requestId" | "channel">,
   entry: {
     action: string;
     entityType: string;

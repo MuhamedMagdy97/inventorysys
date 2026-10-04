@@ -1,6 +1,6 @@
-import type { Tx } from "@/server/db";
+import { db, type Tx } from "@/server/db";
 import { writeAudit } from "@/server/core/audit";
-import { authorize, type Ctx } from "@/server/core/ctx";
+import { requirePermission, type Ctx } from "@/server/core/ctx";
 
 // WH-01/WH-05: every warehouse gets a default sellable, receiving, quarantine and damaged bin.
 export const DEFAULT_BINS = [
@@ -12,7 +12,7 @@ export const DEFAULT_BINS = [
 
 // ponytail: minimal create for Part 1; full warehouse/bin admin is Part 3 (T3.3).
 export async function createWarehouse(tx: Tx, ctx: Ctx, input: { code: string; name: string }) {
-  authorize(ctx, "warehouses.create");
+  await requirePermission(ctx, "warehouses.create");
   const warehouse = await tx.warehouse.create({
     data: {
       companyId: ctx.companyId,
@@ -26,4 +26,14 @@ export async function createWarehouse(tx: Tx, ctx: Ctx, input: { code: string; n
     action: "create", entityType: "warehouse", entityId: warehouse.id, warehouseId: warehouse.id, after: warehouse,
   });
   return warehouse;
+}
+
+// Selector list, limited to the caller's scope (doc 02 §3).
+export async function listWarehouses(ctx: Ctx) {
+  await requirePermission(ctx, ["warehouses.view", "users.manage"]);
+  return db.warehouse.findMany({
+    where: { companyId: ctx.companyId, ...(ctx.warehouseIds === "all" ? {} : { id: { in: ctx.warehouseIds } }) },
+    orderBy: { code: "asc" },
+    select: { id: true, code: true, name: true, status: true },
+  });
 }

@@ -1,14 +1,13 @@
 import type { InventoryMovement, Reservation, ReservationLine } from "@/generated/prisma/client";
 import { writeAudit } from "@/server/core/audit";
-import { authorize, type Ctx } from "@/server/core/ctx";
+import { requirePermission, type Ctx } from "@/server/core/ctx";
 import { AppError } from "@/server/core/errors";
 import type { Tx } from "@/server/db";
+import { readSettings } from "@/server/settings/settings";
 import { dec, lockPositions, postMovements, type Dec, type DecValue, type Leg } from "./post";
 
 // Reservations (doc 12). Lock order everywhere: reservation row → allocation rows → bin rows.
 
-// ponytail: fixed TTL until the settings table lands (T2.6, per-channel TTLs).
-export const DEFAULT_TTL_SECONDS = 48 * 3600;
 const MAX_TTL_SECONDS = 30 * 24 * 3600;
 
 type WithLines = Reservation & { lines: ReservationLine[] };
@@ -27,10 +26,11 @@ export async function reserve(
     orderRef?: string;
   },
 ) {
-  authorize(ctx, "sales.reserve", input.warehouseId);
+  await requirePermission(ctx, "sales.reserve", { warehouseId: input.warehouseId });
   const qty = dec(input.qty);
   if (!qty.gt(0)) throw new AppError("validation_error", "qty must be > 0");
-  const ttl = input.ttlSeconds ?? DEFAULT_TTL_SECONDS;
+  // ponytail: one company-wide default TTL (settings); per-channel TTLs come with channels in Part 5.
+  const ttl = input.ttlSeconds ?? (await readSettings(tx, ctx.companyId)).reservationTtlSeconds;
   if (ttl < 60 || ttl > MAX_TTL_SECONDS) throw new AppError("validation_error", "ttlSeconds out of range");
 
   const [variant, warehouse] = await Promise.all([
@@ -126,7 +126,7 @@ async function lockReservation(tx: Tx, ctx: Ctx, id: string, version: number | u
     SELECT id FROM reservation WHERE id = ${id} AND company_id = ${ctx.companyId} FOR UPDATE`;
   if (rows.length === 0) throw new AppError("not_found", "Reservation not found");
   const r = await tx.reservation.findUniqueOrThrow({ where: { id }, include: { lines: { orderBy: { id: "asc" } } } });
-  authorize(ctx, permission, r.warehouseId);
+  await requirePermission(ctx, permission, { warehouseId: r.warehouseId });
   if (r.status === "expired") throw new AppError("reservation_expired", "Reservation has expired", { id });
   if (r.status !== "active" && r.status !== "partially_fulfilled") {
     throw new AppError("invalid_transition", `Reservation is ${r.status}`, { id, status: r.status });

@@ -2,7 +2,7 @@
 
 Multi-warehouse, ledger-driven inventory management system. Every stock change is an immutable movement with a matching audit entry. It covers purchasing, receiving, transfers, reservations, returns, counts and reporting, with RBAC and warehouse scoping.
 
-**Stack:** Next.js 16 (App Router + Route Handlers) · Prisma 7 · PostgreSQL 18 · Vitest · Tailwind 4
+**Stack:** Next.js 16 (App Router + Route Handlers) · Prisma 7 · PostgreSQL 18 · Better Auth · Vitest · Tailwind 4
 
 ## Getting started
 
@@ -13,10 +13,13 @@ cp .env.example .env
 npm install
 npm run db:up
 npm run db:migrate
+npm run db:seed
 npm run dev
 ```
 
-Open http://localhost:3000/api/health. It should return `{"status":"ok","db":"ok"}`.
+Open http://localhost:3000 and sign in as `manager@demo.local` (inventory manager) or `admin@demo.local` (super admin; asks you to set up an authenticator app first). The password is `SEED_PASSWORD` from `.env`.
+
+API clients (sales channels) authenticate with an `x-api-key` header: create a service user under **Users**, then create a key on its page. Health check: http://localhost:3000/api/health.
 
 ## Checks
 

@@ -44,15 +44,15 @@ Spec: 07, 08, 14 §2, 15 §1, 18, 19 (INV-001–004, 011, 017, 021–023, 025), 
 - [x] T1.9 **WAC + point-in-time value:** WAC updated on inbound legs; `valueAt(T)` = replay of snapshots ≤ T. ✅ when: valueAt(now) == live valuation on seeded data (INV-022).
 - [x] T1.10 API: `GET /api/availability`, `GET /api/balances`, `GET /api/movements`, `POST /api/reservations` (+ `/release`, `/fulfil`, `/cancel`).
 
-## Part 2 — Auth, RBAC, warehouse scope, app shell (closes P1 gate)
+## Part 2 — Auth, RBAC, warehouse scope, app shell (closes P1 gate) — tasks ✅ 2026-10-04; tag `part-2` after CI is green
 Spec: 02, 18, 26, 19 (INV-006, 013, 018, 020, 024).
-- T2.1 Better Auth (email+password, sessions, lockout after 5 fails, optional TOTP 2FA — required for owner/admin roles). Install here.
-- T2.2 `role`, `permission`, `user_roles`, `user_warehouses`; idempotent seed of 12 roles × canonical grants (doc 02 §2, `limit_amount` on approve grants).
-- T2.3 `requirePermission(ctx, grant, {warehouseId?, amount?})` + scope filter helper; denials → 403 + `access.denied` audit. Domain functions call it themselves (not only routes).
-- T2.4 `ctx` built from the session in route handlers / Server Actions; API keys (Better Auth plugin) for sales channels → service-user ctx.
-- T2.5 App shell: login, layout, nav gated by permissions, user/role admin pages, audit explorer (before/after diff).
-- T2.6 Settings table + company settings page (currency, timezone, TTLs, tolerances, approval limits).
-- Gate: scope isolation (a user on warehouse A can't read or post warehouse B through any endpoint), creator≠approver helper, permission re-check at post time, audit completeness.
+- [x] T2.1 Better Auth (email+password, sessions, lockout after 5 fails, optional TOTP 2FA — required for owner/admin roles). Install here.
+- [x] T2.2 `role`, `permission`, `user_roles`, `user_warehouses`; idempotent seed of 12 roles × canonical grants (doc 02 §2, `limit_amount` on approve grants).
+- [x] T2.3 `requirePermission(ctx, grant, {warehouseId?, amount?})` + scope filter helper; denials → 403 + `access.denied` audit. Domain functions call it themselves (not only routes).
+- [x] T2.4 `ctx` built from the session in route handlers / Server Actions; API keys (Better Auth plugin) for sales channels → service-user ctx.
+- [x] T2.5 App shell: login, layout, nav gated by permissions, user/role admin pages, audit explorer (before/after diff).
+- [x] T2.6 Settings table + company settings page (currency, timezone, TTLs, tolerances; approval limits live on role grants).
+- [x] Gate: scope isolation (a user on warehouse A can't read or post warehouse B through any endpoint), creator≠approver helper, permission re-check at post time, audit completeness → `src/app/api/scope.test.ts`, `src/server/auth/auth.test.ts`.
 
 ## Part 3 — Catalog, suppliers, warehouses (closes P2 + P3 gates)
 Spec: 04, 05, 06, 22, flows 1–5, edge #3–8, #24.

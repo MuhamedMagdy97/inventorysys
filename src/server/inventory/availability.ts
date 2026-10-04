@@ -1,4 +1,4 @@
-import { authorize, inScope, type Ctx } from "@/server/core/ctx";
+import { inScope, requirePermission, scopeFilter, type Ctx } from "@/server/core/ctx";
 import { AppError } from "@/server/core/errors";
 import { db } from "@/server/db";
 import { dec, type Dec } from "./post";
@@ -7,14 +7,14 @@ import { dec, type Dec } from "./post";
 // Batches with expiry_date <= today are not reservable (B-04), so they add nothing
 // to `available` even before the expiry job moves them.
 export async function getAvailability(ctx: Ctx, input: { variantId: string; warehouseId?: string }) {
-  authorize(ctx, ["inventory.view", "sales.view"], input.warehouseId);
+  await requirePermission(ctx, ["inventory.view", "sales.view"], { warehouseId: input.warehouseId });
   const variant = await db.productVariant.findFirst({ where: { id: input.variantId, companyId: ctx.companyId } });
   if (!variant) throw new AppError("not_found", "Variant not found");
 
   const where = {
     companyId: ctx.companyId,
     variantId: variant.id,
-    warehouseId: input.warehouseId ?? (ctx.warehouseIds === "all" ? undefined : { in: ctx.warehouseIds }),
+    warehouseId: scopeFilter(ctx, input.warehouseId),
   };
   const [balances, allocations] = await Promise.all([
     db.stockBalance.findMany({ where }),

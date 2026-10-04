@@ -36,21 +36,49 @@ model Company {
   sequences          Sequence[]
   idempotencyRecords IdempotencyRecord[]
   reservations       Reservation[]
+  roles              Role[]
+  userRoles          UserRole[]
+  userWarehouses     UserWarehouse[]
+  settings           Setting[]
 
   @@map("company")
 }
 
+// Better Auth reads/writes this model: field names are its contract, columns are ours.
 model User {
-  id        String   @id @default(uuid(7))
-  companyId String   @map("company_id")
-  name      String
-  isSystem  Boolean  @default(false) @map("is_system")
-  createdAt DateTime @default(now()) @map("created_at")
+  id               String     @id @default(uuid(7))
+  companyId        String     @map("company_id")
+  name             String
+  email            String     @unique
+  emailVerified    Boolean    @default(false) @map("email_verified")
+  image            String?
+  twoFactorEnabled Boolean?   @default(false) @map("two_factor_enabled")
+  status           UserStatus @default(active)
+  isSystem         Boolean    @default(false) @map("is_system") // jobs actor, cannot log in
+  isService        Boolean    @default(false) @map("is_service") // sales-channel API-key holder, cannot log in
+  failedLoginCount Int        @default(0) @map("failed_login_count")
+  lockedUntil      DateTime?  @map("locked_until")
+  version          Int        @default(0)
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @default(now()) @updatedAt @map("updated_at")
 
-  company Company @relation(fields: [companyId], references: [id])
+  company    Company         @relation(fields: [companyId], references: [id])
+  sessions   Session[]
+  accounts   Account[]
+  twofactors TwoFactor[]
+  roles      UserRole[]
+  warehouses UserWarehouse[]
 
+  @@unique([companyId, id])
   @@index([companyId])
   @@map("user")
+}
+
+enum UserStatus {
+  active
+  disabled
+
+  @@map("user_status")
 }
 
 enum MasterStatus {
@@ -94,8 +122,10 @@ model Warehouse {
   variantCosts       VariantCost[]
   inventoryMovements InventoryMovement[]
   reservations       Reservation[]
+  userWarehouses     UserWarehouse[]
 
   @@unique([companyId, code])
+  @@unique([companyId, id])
   @@map("warehouse")
 }
 
@@ -427,4 +457,184 @@ model ReservationLine {
   batch       Batch?      @relation(fields: [batchId], references: [id])
 
   @@map("reservation_line")
+}
+
+// ───────────────────────── Part 2: auth (Better Auth) ─────────────────────────
+// Shapes dictated by Better Auth 1.7 (`npx @better-auth/cli generate`); columns snake_cased.
+
+model Session {
+  id        String   @id @default(uuid(7))
+  expiresAt DateTime @map("expires_at")
+  token     String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(uuid(7))
+  accountId             String    @map("account_id")
+  providerId            String    @map("provider_id")
+  userId                String    @map("user_id")
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?   @map("access_token")
+  refreshToken          String?   @map("refresh_token")
+  idToken               String?   @map("id_token")
+  accessTokenExpiresAt  DateTime? @map("access_token_expires_at")
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(uuid(7))
+  identifier String
+  value      String
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+model TwoFactor {
+  id                      String    @id @default(uuid(7))
+  secret                  String
+  backupCodes             String    @map("backup_codes")
+  userId                  String    @map("user_id")
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verified                Boolean?  @default(true)
+  failedVerificationCount Int?      @default(0) @map("failed_verification_count")
+  lockedUntil             DateTime? @map("locked_until")
+
+  @@index([secret])
+  @@index([userId])
+  @@map("two_factor")
+}
+
+// referenceId = the service user the key acts as (doc 02 §6).
+model Apikey {
+  id                  String    @id @default(uuid(7))
+  configId            String    @default("default") @map("config_id")
+  name                String?
+  start               String?
+  referenceId         String    @map("reference_id")
+  prefix              String?
+  key                 String
+  refillInterval      Int?      @map("refill_interval")
+  refillAmount        Int?      @map("refill_amount")
+  lastRefillAt        DateTime? @map("last_refill_at")
+  enabled             Boolean?  @default(true)
+  rateLimitEnabled    Boolean?  @default(true) @map("rate_limit_enabled")
+  rateLimitTimeWindow Int?      @default(86400000) @map("rate_limit_time_window")
+  rateLimitMax        Int?      @default(10) @map("rate_limit_max")
+  requestCount        Int?      @default(0) @map("request_count")
+  remaining           Int?
+  lastRequest         DateTime? @map("last_request")
+  expiresAt           DateTime? @map("expires_at")
+  createdAt           DateTime  @map("created_at")
+  updatedAt           DateTime  @map("updated_at")
+  permissions         String?
+  metadata            String?
+
+  @@index([configId])
+  @@index([referenceId])
+  @@index([key])
+  @@map("apikey")
+}
+
+// ───────────────────────── Part 2: RBAC + settings (doc 02) ─────────────────────────
+
+// Canonical grant list (doc 02 §2). role_permission FKs it, so unknown codes are rejected by the DB.
+model Permission {
+  code            String  @id
+  warehouseScoped Boolean @default(false) @map("warehouse_scoped")
+
+  roles RolePermission[]
+
+  @@map("permission")
+}
+
+model Role {
+  id            String   @id @default(uuid(7))
+  companyId     String   @map("company_id")
+  code          String
+  name          String
+  isSystem      Boolean  @default(false) @map("is_system")
+  allWarehouses Boolean  @default(false) @map("all_warehouses") // ★ in doc 02 §5.1
+  requires2fa   Boolean  @default(false) @map("requires_2fa")
+  version       Int      @default(0)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  company     Company          @relation(fields: [companyId], references: [id])
+  permissions RolePermission[]
+  users       UserRole[]
+
+  @@unique([companyId, code])
+  @@unique([companyId, id])
+  @@map("role")
+}
+
+model RolePermission {
+  roleId         String   @map("role_id")
+  permissionCode String   @map("permission_code")
+  limitAmount    Decimal? @map("limit_amount") @db.Decimal(18, 2)
+
+  role       Role       @relation(fields: [roleId], references: [id])
+  permission Permission @relation(fields: [permissionCode], references: [code])
+
+  @@id([roleId, permissionCode])
+  @@map("role_permission")
+}
+
+// company_id + composite FKs: users only get roles/warehouses of their own company (doc 22).
+model UserRole {
+  companyId String @map("company_id")
+  userId    String @map("user_id")
+  roleId    String @map("role_id")
+
+  company Company @relation(fields: [companyId], references: [id])
+  user    User    @relation(fields: [companyId, userId], references: [companyId, id])
+  role    Role    @relation(fields: [companyId, roleId], references: [companyId, id])
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model UserWarehouse {
+  companyId   String @map("company_id")
+  userId      String @map("user_id")
+  warehouseId String @map("warehouse_id")
+
+  company   Company   @relation(fields: [companyId], references: [id])
+  user      User      @relation(fields: [companyId, userId], references: [companyId, id])
+  warehouse Warehouse @relation(fields: [companyId, warehouseId], references: [companyId, id])
+
+  @@id([userId, warehouseId])
+  @@map("user_warehouses")
+}
+
+// Company settings (doc 25): key → JSON value. Defaults + validation live in src/server/settings.
+model Setting {
+  companyId String   @map("company_id")
+  key       String
+  value     Json
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@id([companyId, key])
+  @@map("settings")
 }
