@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { MovementType } from "@/generated/prisma/client";
 import { parseQuery, withApi, zId, zPage } from "@/server/core/api";
-import { requestCtx } from "@/server/core/request-ctx";
+import { requestCtx } from "@/server/auth/session-ctx";
 import { listMovements } from "@/server/inventory/queries";
 
 const Query = z.object({
@@ -18,5 +18,5 @@ const Query = z.object({
 // GET /api/movements — the ledger, newest first.
 export const GET = withApi(async (req, { requestId }) => {
   const { per_page, ...q } = parseQuery(req, Query);
-  return listMovements(await requestCtx(requestId), { ...q, perPage: per_page });
+  return listMovements(await requestCtx(req, requestId), { ...q, perPage: per_page });
 });

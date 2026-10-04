@@ -1,18 +1,16 @@
 import type { MovementType } from "@/generated/prisma/client";
-import { authorize, type Ctx } from "@/server/core/ctx";
+import { requirePermission, scopeFilter, type Ctx } from "@/server/core/ctx";
 import { db } from "@/server/db";
 
 type Page = { page: number; perPage: number };
 const paging = ({ page, perPage }: Page) => ({ skip: (page - 1) * perPage, take: perPage });
-const scopeFilter = (ctx: Ctx, warehouseId?: string) =>
-  warehouseId ?? (ctx.warehouseIds === "all" ? undefined : { in: ctx.warehouseIds });
 
 // Physical buckets per bin, scoped by company + warehouses.
 export async function listBalances(
   ctx: Ctx,
   input: Page & { variantId?: string; warehouseId?: string; binId?: string; batchId?: string; nonZero?: boolean },
 ) {
-  authorize(ctx, "inventory.view", input.warehouseId);
+  await requirePermission(ctx, "inventory.view", { warehouseId: input.warehouseId });
   const where = {
     companyId: ctx.companyId,
     warehouseId: scopeFilter(ctx, input.warehouseId),
@@ -42,7 +40,7 @@ export async function listMovements(
     sourceType?: string; sourceId?: string; from?: Date; to?: Date;
   },
 ) {
-  authorize(ctx, "inventory.view", input.warehouseId);
+  await requirePermission(ctx, "inventory.view", { warehouseId: input.warehouseId });
   const where = {
     companyId: ctx.companyId,
     warehouseId: scopeFilter(ctx, input.warehouseId),

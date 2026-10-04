@@ -1,6 +1,6 @@
 import type { Tx } from "@/server/db";
 import { writeAudit } from "@/server/core/audit";
-import { authorize, type Ctx } from "@/server/core/ctx";
+import { requirePermission, type Ctx } from "@/server/core/ctx";
 
 // ponytail: minimal product/variant/batch creation for Part 1; full catalog is Part 3 (T3.1).
 export async function createProduct(
@@ -13,7 +13,7 @@ export async function createProduct(
     variants: { sku: string; barcode?: string }[];
   },
 ) {
-  authorize(ctx, "products.create");
+  await requirePermission(ctx, "products.create");
   const product = await tx.product.create({
     data: {
       companyId: ctx.companyId,
@@ -33,7 +33,7 @@ export async function createBatch(
   ctx: Ctx,
   input: { variantId: string; batchNo: string; expiryDate?: Date },
 ) {
-  authorize(ctx, "products.update");
+  await requirePermission(ctx, "products.update");
   await tx.productVariant.findFirstOrThrow({ where: { id: input.variantId, companyId: ctx.companyId } });
   const batch = await tx.batch.create({ data: { companyId: ctx.companyId, ...input } });
   await writeAudit(tx, ctx, { action: "create", entityType: "batch", entityId: batch.id, after: batch });

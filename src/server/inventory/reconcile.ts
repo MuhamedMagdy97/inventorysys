@@ -1,4 +1,4 @@
-import { authorize, type Ctx } from "@/server/core/ctx";
+import { requirePermission, type Ctx } from "@/server/core/ctx";
 import { db } from "@/server/db";
 
 export type Drift = { check: string; key: Record<string, unknown>; expected: string; actual: string };
@@ -17,7 +17,7 @@ type Row = {
 // inside one REPEATABLE READ snapshot so concurrent postings can't show as drift.
 // Empty result = clean.
 export async function reconcile(ctx: Ctx): Promise<Drift[]> {
-  authorize(ctx, "inventory.view");
+  await requirePermission(ctx, "inventory.view");
   const c = ctx.companyId;
   return db.$transaction(
     async (tx) => {

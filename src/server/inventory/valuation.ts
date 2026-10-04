@@ -1,4 +1,4 @@
-import { authorize, type Ctx } from "@/server/core/ctx";
+import { requirePermission, type Ctx } from "@/server/core/ctx";
 import { db } from "@/server/db";
 import { dec } from "./post";
 
@@ -7,7 +7,7 @@ import { dec } from "./post";
 // ponytail: valued per warehouse incl. damaged/expired/blocked; the in-transit line
 // arrives with transfers (Part 6).
 export async function valueAt(ctx: Ctx, at: Date, input: { warehouseId?: string } = {}) {
-  authorize(ctx, ["inventory.view", "reports.view"], input.warehouseId);
+  await requirePermission(ctx, ["inventory.view", "reports.view"], { warehouseId: input.warehouseId });
   const scope = input.warehouseId ? [input.warehouseId] : ctx.warehouseIds === "all" ? null : ctx.warehouseIds;
   const rows = await db.inventoryMovement.groupBy({
     by: ["variantId", "warehouseId"],
@@ -24,7 +24,7 @@ export async function valueAt(ctx: Ctx, at: Date, input: { warehouseId?: string 
 
 // Live valuation from the cost layer (what valueAt(now) must equal).
 export async function liveValue(ctx: Ctx, input: { warehouseId?: string } = {}) {
-  authorize(ctx, ["inventory.view", "reports.view"], input.warehouseId);
+  await requirePermission(ctx, ["inventory.view", "reports.view"], { warehouseId: input.warehouseId });
   const scope = input.warehouseId ? [input.warehouseId] : ctx.warehouseIds === "all" ? null : ctx.warehouseIds;
   const rows = await db.variantCost.findMany({
     where: { companyId: ctx.companyId, ...(scope ? { warehouseId: { in: scope } } : {}) },

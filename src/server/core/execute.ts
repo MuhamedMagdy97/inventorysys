@@ -9,7 +9,7 @@ type Json = Prisma.JsonValue;
 
 // Guard failures that A-06 wants audited as `transition.denied` (the business
 // transaction rolled back, so this audit row is written on its own).
-const DENIED = new Set(["version_conflict", "invalid_transition", "reservation_expired", "forbidden"]);
+const DENIED = new Set(["version_conflict", "invalid_transition", "reservation_expired"]);
 
 // Runs one mutating use case in a transaction.
 // With an idempotency key (MV-02 layer 1 / INV-017): the first request stores its
@@ -50,7 +50,7 @@ export async function execute(
   } catch (e) {
     if (e instanceof AppError && DENIED.has(e.code)) {
       await writeAudit(db, ctx, {
-        action: e.code === "forbidden" ? "access.denied" : "transition.denied",
+        action: "transition.denied",
         entityType: opts.entity?.type ?? opts.scope,
         entityId: opts.entity?.id ?? "-",
         reason: e.message,

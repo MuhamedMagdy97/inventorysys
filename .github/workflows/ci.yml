@@ -22,6 +22,8 @@ jobs:
     env:
       DATABASE_URL: postgresql://inventory:inventory@localhost:5433/inventory_test?schema=public
       TEST_DATABASE_URL: postgresql://inventory:inventory@localhost:5433/inventory_test?schema=public
+      BETTER_AUTH_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
+      BETTER_AUTH_URL: http://localhost:3000
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "vitest";
 import { db, transaction } from "@/server/db";
 import { postMovements } from "@/server/inventory/post";
 import { seedCompany } from "@/server/seed";
+import { apiKeyHeaders } from "@/test/auth";
 import { GET as availability } from "./availability/route";
 import { GET as balances } from "./balances/route";
 import { GET as movements } from "./movements/route";
@@ -10,13 +11,16 @@ import { POST as reservations } from "./reservations/route";
 
 // T1.10: the HTTP surface, called as Next would call it.
 let w: Awaited<ReturnType<typeof seedCompany>>;
+let h: Record<string, string>; // a sales channel's API key (sales_staff, main warehouse)
 const url = (path: string, q: Record<string, string> = {}) => `http://t/api/${path}?${new URLSearchParams(q)}`;
 const post = (path: string, body: unknown, key?: string) =>
-  new Request(url(path), { method: "POST", body: JSON.stringify(body), headers: key ? { "idempotency-key": key } : {} });
+  new Request(url(path), { method: "POST", body: JSON.stringify(body), headers: { ...h, ...(key ? { "idempotency-key": key } : {}) } });
+const get = (path: string, q: Record<string, string> = {}) => new Request(url(path, q), { headers: h });
 const params = (id: string, action: string) => ({ params: Promise.resolve({ id, action }) });
 
 beforeAll(async () => {
-  w = await seedCompany("Demo Company"); // the dev request ctx acts as this company's admin
+  w = await seedCompany(`api-${crypto.randomUUID()}`);
+  h = (await apiKeyHeaders(w, "sales_staff", [w.warehouse.id])).headers;
   await transaction((tx) => postMovements(tx, w.ctx, {
     sourceType: "opening", sourceId: "ob",
     legs: [{ type: "opening_balance", variantId: w.variants[0].id, warehouseId: w.warehouse.id, binId: w.warehouse.bins[0].id, delta: { onHand: 5 }, unitCost: 2, line: 1, reasonCode: "opening" }],
@@ -36,7 +40,7 @@ test("reserve → retry → availability → fulfil, over HTTP", async () => {
   const r2 = await reservations(post("reservations", body, "k1"));
   expect(await r2.json()).toEqual(j1); // retry → original response, no second reservation
 
-  const a = await (await availability(new Request(url("availability", { variantId: body.variantId, warehouseId: body.warehouseId })))).json();
+  const a = await (await availability(get("availability", { variantId: body.variantId, warehouseId: body.warehouseId }))).json();
   expect([a.onHand, a.reserved, a.available]).toEqual(["5", "3", "2"]);
 
   const over = await reservations(post("reservations", { ...body, qty: 3 }, "k2"));
@@ -52,9 +56,9 @@ test("reserve → retry → availability → fulfil, over HTTP", async () => {
   const c = await act(post(`reservations/${id}/cancel`, { version: 1 }, "k5"), params(id, "cancel"));
   expect((await c.json()).reservation.status).toBe("cancelled");
 
-  const led = await (await movements(new Request(url("movements", { variantId: body.variantId, per_page: "10" })))).json();
+  const led = await (await movements(get("movements", { variantId: body.variantId, per_page: "10" }))).json();
   expect(led.items.map((m: { type: string }) => m.type)).toEqual(["reservation_release", "sale_fulfilment", "reservation", "opening_balance"]);
-  const bal = await (await balances(new Request(url("balances", { variantId: body.variantId, nonZero: "true" })))).json();
+  const bal = await (await balances(get("balances", { variantId: body.variantId, nonZero: "true" }))).json();
   expect(bal.items).toHaveLength(1);
   expect(bal.items[0].onHand).toBe("3");
 });
@@ -67,4 +71,11 @@ test("input errors: missing Idempotency-Key, bad body, unknown action", async ()
   const id = crypto.randomUUID();
   expect((await act(post(`reservations/${id}/explode`, { version: 0 }, "k7"), params(id, "explode"))).status).toBe(404);
   expect((await act(post(`reservations/${id}/toString`, { version: 0 }, "k8"), params(id, "toString"))).status).toBe(404);
+});
+
+test("no credentials or a bad API key → 403", async () => {
+  const anon = await availability(new Request(url("availability", { variantId: w.variants[0].id })));
+  expect([anon.status, (await anon.json()).details.reason]).toEqual([403, "unauthenticated"]);
+  const bad = await availability(new Request(url("availability", { variantId: w.variants[0].id }), { headers: { "x-api-key": "nope" } }));
+  expect(bad.status).toBe(403);
 });

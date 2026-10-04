@@ -41,7 +41,35 @@ There is no `purchases.receive` grant — receiving is `inventory.receive` (phys
 ## 4. Inheritance & Assignment
 - Roles bundle permissions. Users have ≥1 role. Effective permissions = union. Warehouse scope = union of assigned warehouses (most permissive wins for visibility, but actions still need the action grant).
 - No per-user permission overrides in V1 (keeps audit simple). Exceptions handled by creating a new role.
+- No privilege escalation: a user may only assign roles, add grants, or assign warehouses that they themselves hold (an admin sets passwords, so assigning a role is equivalent to holding it). Roles beyond the Administrator's own grants (e.g. owner, purchasing_*) are assigned by a Super Admin. Violations → `forbidden` (`reason = "escalation"`) + `access.denied` audit.
 - Permission changes take effect immediately; in-flight Draft actions keep creator attribution but re-check permission at submit/approve/post time (fail with `forbidden` + audit).
 
 ## 5. Seed Roles (V1)
-`super_admin, owner, admin, inventory_manager, warehouse_manager, warehouse_staff, purchasing_manager, purchasing_staff, sales_staff, accountant, auditor, viewer`. Permissions matrix (full table) lives in `24-api-requirements.md` appendix reference and must be seeded idempotently.
+`super_admin, owner, admin, inventory_manager, warehouse_manager, warehouse_staff, purchasing_manager, purchasing_staff, sales_staff, accountant, auditor, viewer`. Roles are per company (`role.company_id`); the 12 seed roles are `is_system` (grants editable, code not). The canonical matrix is §5.1 and is seeded idempotently (re-running adds missing roles, never overwrites grant edits).
+
+### 5.1 Seed grant matrix (normative)
+`x.*` = every action of that resource in §2. `:N` = `limit_amount` N in company currency (no suffix = unlimited). ★ = all warehouses by default (§3).
+
+| Role | Grants |
+|---|---|
+| super_admin ★ | every grant in §2 except `system.migration_run` |
+| owner ★ | every `*.view`, `reports.*`, `audit.view`, `settings.manage`, `purchases.approve`, `purchases.return_approve`, `inventory.adjust_approve/transfer_approve/count_approve/damage_approve/repair_approve/dispose_approve`, `sales.return_approve` (no posting grants — SoD) |
+| admin | `users.*`, `roles.manage`, `audit.view`, `settings.manage`, `imports.run`, `sequences.view`, `products.*`, `categories.manage`, `brands.manage`, `uom.manage`, `suppliers.*`, `warehouses.*`, `locations.manage` |
+| inventory_manager ★ | `products.view/create/update`, `suppliers.view`, `warehouses.view`, `locations.manage`, `inventory.*` with `adjust_approve:1000`, `damage_approve:1000`, `repair_approve:1000`, `dispose_approve:1000`; `sales.view`, `sales.return_approve`, `purchases.view`, `purchases.return_approve:1000`, `reports.view/export`, `audit.view` |
+| warehouse_manager | `products.view`, `suppliers.view`, `warehouses.view`, `locations.manage`, `inventory.view/receive/count_create/count_submit/adjust_create/adjust_submit/damage_mark/transfer_create/transfer_submit/transfer_approve/transfer_ship/transfer_receive/inspect`, `purchases.view`, `purchases.return_ship`, `sales.view/fulfil/return_receive/return_inspect`, `reports.view`, `audit.view` (own warehouses) |
+| warehouse_staff | `products.view`, `warehouses.view`, `inventory.view/receive/count_submit/transfer_ship/transfer_receive/damage_mark`, `sales.view/fulfil/return_receive` |
+| purchasing_manager | `products.view`, `suppliers.*`, `purchases.*` with `approve:5000`, `return_approve:5000`; `reports.view` |
+| purchasing_staff | `products.view`, `suppliers.view/create/update`, `purchases.view/create/update/submit`, `purchases.return_create` |
+| sales_staff | `products.view`, `inventory.view`, `sales.view/reserve/fulfil/cancel`, `sales.return_create` |
+| accountant | `products.view`, `suppliers.view`, `warehouses.view`, `inventory.view`, `purchases.view`, `sales.view`, `reports.view/export`, `audit.view` |
+| auditor ★ | every `*.view`, `reports.view/export`, `audit.view`, `sequences.view` |
+| viewer | `products.view`, `warehouses.view`, `inventory.view`, `reports.view` |
+
+Limits: a user's effective limit for a grant is the highest across their roles; any role holding the grant without a limit = unlimited. Amount above the limit → `forbidden` with `details.reason = "over_limit"` (routes upward, INV-020).
+
+## 6. Authentication (normative for build)
+- Email + password (min 10 chars). Accounts are created by an admin (`users.manage`); no self sign-up.
+- Lockout: 5 consecutive failed passwords → account locked 15 min; success resets the counter. Every failure is audited `auth.login_failed` (never the password), every success `auth.login` (A-05).
+- Sessions: 7-day expiry, rolling refresh after 1 day. Disabling a user revokes their sessions.
+- TOTP 2FA optional for everyone, **required** for `super_admin`, `owner`, `admin`: until enabled, that user's ctx carries no permissions (`forbidden`, `details.reason = "2fa_required"`) and the UI sends them to 2FA setup.
+- Sales channels authenticate with an API key (header `x-api-key`) bound to a **service user** (`user.is_service`, cannot log in) whose roles + warehouses define what the channel may do; ctx channel = `api`.
