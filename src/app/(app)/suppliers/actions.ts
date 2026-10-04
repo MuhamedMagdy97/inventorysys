@@ -12,6 +12,7 @@ import {
 const profile = (f: FormData) => ({
   taxId: clearable(f, "taxId"), paymentTerms: str(f, "paymentTerms") as PaymentTerms | undefined, creditLimit: clearable(f, "creditLimit"),
   leadTimeDays: int(f, "leadTimeDays") ?? null, notes: clearable(f, "notes"), requiresInspection: bool(f, "requiresInspection"),
+  receiptTolerancePct: clearable(f, "receiptTolerancePct"),
 });
 
 export async function createSupplierAction(_: ActionState, f: FormData): Promise<ActionState> {

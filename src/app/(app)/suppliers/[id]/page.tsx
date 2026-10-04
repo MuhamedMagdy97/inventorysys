@@ -47,7 +47,8 @@ export default async function SupplierPage({ params }: PageProps<"/suppliers/[id
               <label className="label">Credit limit<input name="creditLimit" type="number" min={0} step="0.01" defaultValue={s.creditLimit?.toString() ?? ""} className="input" /></label>
               <label className="label">Lead time (days)<input name="leadTimeDays" type="number" min={0} defaultValue={s.leadTimeDays ?? ""} className="input" /></label>
               <label className="label">Tax ID<input name="taxId" defaultValue={s.taxId ?? ""} className="input" /></label>
-              <label className="label sm:col-span-2">Notes<input name="notes" defaultValue={s.notes ?? ""} className="input" /></label>
+              <label className="label">Receipt tolerance %<input name="receiptTolerancePct" type="number" min={0} max={100} step="0.01" defaultValue={s.receiptTolerancePct?.toString() ?? ""} placeholder="company default" className="input" /></label>
+              <label className="label">Notes<input name="notes" defaultValue={s.notes ?? ""} className="input" /></label>
             </div>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="requiresInspection" defaultChecked={s.requiresInspection} /> Inspect everything received from this supplier</label>
           </ActionForm>

@@ -64,13 +64,15 @@ Spec: 04, 05, 06, 22, flows 1–5, edge #3–8, #24.
 - Gate: SKU immutability + alias flow, barcode alias window, archive-blocked-with-stock, category cycle rejected → `src/server/catalog/catalog.test.ts`, `src/server/warehouses/warehouses.test.ts`, `src/server/suppliers/suppliers.test.ts`, `src/app/api/catalog.test.ts`.
 - Deferred: image/document **uploads** (URL only for now; allowlist + size caps with imports, Part 8); stock migration for a replaced SKU uses the Part 6 adjustment.
 
-## Part 4 — Purchasing + receiving (closes P5 gate)
-Spec: 09, 10, 14 §3 (serial capture), 23 (PO), flows 6–8, edge #1, 9, 21, 22, 27, 36.
-- T4.1 PO lifecycle (state machine helper with `version`, reused by every later document): draft→…→closed, reject→draft, cancel guard, approval limits. Also: SUP-01 open-PO check in `updateSupplier` archive, SUP-02 contact+address before first approval, open PO lines in product archive guard, open receipts in WH-02; PO lines use `assertTransactable` + `uomFactor` (Part 3).
-- T4.2 GRN posting: partials, tolerance, damaged/expired splits, excess → `blocked_in` + decision, wrong product, UOM conversion snapshot, batch/expiry capture, serial capture (`serial_unit` + I-06).
-- T4.3 Receipt reversal document (never void).
-- T4.4 UI: PO list/detail/wizard, receiving wizard (scan-friendly).
-- Gate: the doc 06-execution P5 case list (full/partial/over/under/wrong/damaged/duplicate-retry/close).
+## Part 4 — Purchasing + receiving (closes P5 gate) — tasks ✅ 2026-10-05; tag `part-4` after CI is green
+Spec: 09, 10, 14 §3 (serial capture), 23 (PO), flows 6–8, edge #1, 9, 21, 22, 27, 36. Build decisions: 09 §5 (PO-09…13), 10 §5 (RC-08…13).
+- [x] T4.1 PO lifecycle on the reusable `stateMachine` helper (`src/server/core/state.ts`, compare-and-increment `version`): draft→…→closed, reject→draft, cancel guard, approval limits, SoD. Also: SUP-01 open-PO check in supplier archive, SUP-02 at approval, open PO lines in product/variant archive guard, open POs in WH-02.
+- [x] T4.2 GRN posting: partials, tolerance (supplier % or company setting), damaged/expired splits, excess → `blocked_in` + approve/reject decision, wrong product (held → blocked at WAC), UOM factor snapshot, batch/expiry capture, serial capture (`serial_unit` + I-06 in the reconciler).
+- [x] T4.3 Receipt reversal document (mirrors movements via `reverses_movement_id`, once only, never void).
+- [x] T4.4 UI: PO list (+ pending over-delivery queue), new PO, PO detail (actions, approvals, receipts, reverse, excess decision), receiving form (idempotent).
+- [x] API: `/api/purchase-orders` (+ `/:id`, `/:id/{submit|approve|reject|order|close|cancel|reduce-line}`), `POST /api/receipts`, `/api/receipts/:id/reverse`, `/api/receipt-lines/:id/excess`.
+- Gate: full/partial/over/under/wrong/damaged/duplicate-retry/close + reversal, UOM, batch, serial, SoD, archive guards → `src/server/purchasing/purchasing.test.ts`, `src/app/api/purchasing.test.ts`.
+- Deferred: inspection decision (`blocked_release`/`blocked_reject` for RC-05 units) with the Part 7 inspection screen; invoice-price variance + `cost_correction`; serialized reserve/fulfil/transfer (Parts 5–6 — posting refuses serialized stock outside receipts until then).
 
 ## Part 5 — Sales channel API + background worker → **sellable alpha**
 Spec: 12, 14 §5, 17 (partial), edge #18, 29, 32, 34.

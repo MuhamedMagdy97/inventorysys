@@ -4,6 +4,7 @@ import { requirePermission, type Ctx } from "@/server/core/ctx";
 import { AppError, assertVersion } from "@/server/core/errors";
 import { nextNumber } from "@/server/core/sequences";
 import { db, type Tx } from "@/server/db";
+import { OPEN_PO } from "@/server/purchasing/purchase-orders";
 
 // Doc 05. Lifecycle active ↔ inactive → archived (terminal).
 
@@ -16,6 +17,7 @@ export type SupplierInput = {
   leadTimeDays?: number | null;
   notes?: string | null;
   requiresInspection?: boolean;
+  receiptTolerancePct?: Prisma.Decimal | string | number | null;
 };
 
 function fields(input: Partial<SupplierInput>) {
@@ -32,8 +34,17 @@ function fields(input: Partial<SupplierInput>) {
     name, currency: input.currency, paymentTerms: input.paymentTerms, creditLimit, leadTimeDays: input.leadTimeDays,
     taxId: input.taxId === undefined ? undefined : input.taxId?.trim() || null,
     notes: input.notes === undefined ? undefined : input.notes?.trim() || null,
-    requiresInspection: input.requiresInspection,
+    requiresInspection: input.requiresInspection, receiptTolerancePct: tolerance(input.receiptTolerancePct),
   };
+}
+
+// PO-10: per-supplier receipt tolerance %, null = company setting.
+function tolerance(v: SupplierInput["receiptTolerancePct"]) {
+  if (v === undefined) return undefined;
+  if (v === null || v === "") return null;
+  const d = new Prisma.Decimal(v);
+  if (d.isNeg() || d.gt(100) || d.decimalPlaces() > 2) throw new AppError("validation_error", "Receipt tolerance: 0–100 %", { field: "receiptTolerancePct" });
+  return d;
 }
 
 async function findSupplier(tx: Tx | typeof db, ctx: Ctx, id: string) {
@@ -70,7 +81,10 @@ export async function updateSupplier(tx: Tx, ctx: Ctx, input: Partial<SupplierIn
     throw new AppError("invalid_transition", `Supplier can't go from ${before.status} to ${input.status}`, { from: before.status, to: input.status });
   }
   if (before.status === "archived") throw new AppError("archived_conflict", "Supplier is archived");
-  // SUP-01 (edge #4): Part 4 adds "no PO in draft|submitted|approved|ordered|partially_received" here.
+  if (input.status === "archived") { // SUP-01 (edge #4)
+    const open = await tx.purchaseOrder.count({ where: { supplierId: before.id, status: { in: OPEN_PO } } });
+    if (open) throw new AppError("conflict", `Close or cancel the ${open} open PO(s) first (SUP-01)`, { reason: "open_pos", count: open });
+  }
   assertVersion(await tx.supplier.updateMany({
     where: { id: before.id, version: input.version },
     data: { ...fields(input), status: input.status, version: { increment: 1 } },

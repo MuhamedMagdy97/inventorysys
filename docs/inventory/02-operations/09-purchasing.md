@@ -18,3 +18,10 @@
 
 ## 4. Financial Fields (V1)
 Line: qty × price − discount% + tax%. Header: subtotal − header discount + tax + shipping = total. Supplier invoice ref stored as text; full AP aging is optional module.
+
+## 5. Build decisions (Part 4, normative)
+- PO-09 Editing: header and lines are editable only in `draft` (a rejected PO returns to draft). After approval the only line edit is reducing `qty_ordered` (never below received, PO-03; no re-approval needed). Any increase or price change after approval = close/cancel and raise a new PO, except the over-delivery excess decision (doc 10 §3), which is itself the re-approval: it needs `purchases.approve` covering the excess value and an approver ≠ PO creator. Draft lines are never deleted; a removed line is flagged `removed` and drops out of totals and receiving.
+- PO-10 Tolerance: `supplier.receipt_tolerance_pct` when set, else company setting `receiptTolerancePct`. Read at receipt time.
+- PO-11 Cost basis: receipt `unit_cost_snapshot` per base unit = `unit_price × (1 − discount%) ÷ uom_factor` (line tax and header discount/tax/shipping excluded, PO-07).
+- PO-12 Approval: `purchases.approve` must cover the PO total (limit_amount, INV-020); SUP-02 checked at every approval. Close is blocked while any receipt line has a pending excess decision.
+- PO-13 Numbers: `PO-YYYY-00001` / `GRN-YYYY-00001`, per company per year, allocated inside the creating transaction (gaps after rollback accepted, edge #38).

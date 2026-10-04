@@ -9,6 +9,7 @@ const NAV = [
   { href: "/", label: "Home", grant: null },
   { href: "/products", label: "Products", grant: "products.view" },
   { href: "/suppliers", label: "Suppliers", grant: "suppliers.view" },
+  { href: "/purchase-orders", label: "Purchasing", grant: ["purchases.view", "inventory.receive"] },
   { href: "/warehouses", label: "Warehouses", grant: "warehouses.view" },
   { href: "/admin/users", label: "Users", grant: "users.view" },
   { href: "/admin/roles", label: "Roles", grant: "roles.manage" },
@@ -33,7 +34,7 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
       </header>
       <div className="flex flex-1 flex-col md:flex-row">
         <nav aria-label="Main" className="flex gap-1 overflow-x-auto border-b border-border bg-surface p-2 md:w-48 md:flex-col md:border-b-0 md:border-r">
-          {NAV.filter((n) => !n.grant || ctx.permissions.has(n.grant)).map((n) => (
+          {NAV.filter((n) => !n.grant || [n.grant].flat().some((g) => ctx.permissions.has(g))).map((n) => (
             <Link key={n.href} href={n.href} className="whitespace-nowrap rounded-md px-3 py-2 text-sm hover:bg-background">{n.label}</Link>
           ))}
         </nav>

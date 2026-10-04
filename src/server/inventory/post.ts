@@ -48,7 +48,7 @@ const SHAPES: Partial<Record<MovementType, { kind: Kind; signs: Partial<Record<B
 };
 
 // Inbound types whose unit cost defaults to the current WAC when not given.
-const COST_DEFAULTS_TO_WAC: MovementType[] = ["adjustment_in"];
+const COST_DEFAULTS_TO_WAC: MovementType[] = ["adjustment_in", "blocked_in"];
 
 export type Leg = {
   type: MovementType;
@@ -62,7 +62,8 @@ export type Leg = {
   leg?: number;
   reasonCode: string;
   note?: string;
-  reversesMovementId?: string;
+  reversesMovementId?: string; // mirror of that movement: same type/position, negated deltas (RC-08)
+  serialized?: true; // caller keeps serial_unit in step in the same transaction (I-06)
 };
 
 export type PostInput = { sourceType: string; sourceId: string; legs: Leg[]; action?: string };
@@ -88,6 +89,7 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
     throw new AppError("validation_error", "Duplicate leg key within one posting");
   }
   await validateRefs(tx, ctx, legs);
+  await checkReversals(tx, ctx, legs);
   assertPutawayPairs(legs);
 
   // 1. Locks: allocation rows (position), then bin rows ordered by bin_id, then cost rows.
@@ -147,7 +149,13 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
     if (c) {
       const qty = PHYSICAL.reduce((s, k) => s.plus(l.d[k]), ZERO);
       const wac = c.qty.isZero() ? ZERO : c.value.div(c.qty).toDecimalPlaces(4);
-      if (shape.kind === "in") {
+      if (l.reversesMovementId && shape.kind !== "internal") {
+        // RC-08: undo at the original cost; value never below 0, last units out take the rest.
+        unitCost = dec(l.unitCost!);
+        valueDelta = c.qty.plus(qty).isZero() ? c.value.neg() : Dec.max(qty.times(unitCost).toDecimalPlaces(4), c.value.neg());
+      } else if (l.reversesMovementId) {
+        unitCost = wac;
+      } else if (shape.kind === "in") {
         unitCost = l.unitCost != null ? dec(l.unitCost) : COST_DEFAULTS_TO_WAC.includes(l.type) ? wac : null;
         if (unitCost == null || unitCost.lt(0)) throw new AppError("validation_error", `${l.type} needs a unit cost ≥ 0`);
         valueDelta = qty.times(unitCost).toDecimalPlaces(4);
@@ -263,7 +271,7 @@ function normalize(ctx: Ctx, input: PostInput, l: Leg): Norm {
     d[k] = dec(l.delta[k]);
     if (d[k].decimalPlaces() > 4) throw new AppError("validation_error", "Quantities allow at most 4 decimals");
     const sign = d[k].isZero() ? 0 : d[k].gt(0) ? 1 : -1;
-    if (sign !== 0 && shape.signs[k] !== sign) {
+    if (sign !== 0 && (shape.signs[k] ?? 0) * (l.reversesMovementId ? -1 : 1) !== sign) {
       throw new AppError("validation_error", `${l.type} cannot change ${k} by ${d[k].toString()}`);
     }
   }
@@ -313,8 +321,27 @@ async function validateRefs(tx: Tx, ctx: Ctx, legs: Norm[]) {
     if (v.product.requiresBatch !== !!l.batchId) {
       throw new AppError("validation_error", v.product.requiresBatch ? "Batch required for this product" : "Product is not batch-tracked");
     }
-    // ponytail: serial capture (I-06) arrives with serial_unit in Part 4; block until then.
-    if (v.product.isSerialized) throw new AppError("validation_error", "Serialized products are not supported yet");
+    // ponytail: only callers that maintain serial_unit (receipts, Part 4) may move serialized
+    // stock; reserve/fulfil/transfer/count gain serial handling in Parts 5–8.
+    if (v.product.isSerialized && !l.serialized) throw new AppError("validation_error", "Serialized products need serial capture for this operation (not supported yet)");
+  }
+}
+
+// RC-08: a reversal leg mirrors its original exactly (same type and position, negated
+// deltas) and takes the original unit cost. "Reversed at most once" is a DB index.
+async function checkReversals(tx: Tx, ctx: Ctx, legs: Norm[]) {
+  const ids = legs.map((l) => l.reversesMovementId).filter((x): x is string => !!x);
+  if (!ids.length) return;
+  const originals = new Map((await tx.inventoryMovement.findMany({ where: { companyId: ctx.companyId, id: { in: ids } } })).map((m) => [m.id, m]));
+  for (const l of legs) {
+    if (!l.reversesMovementId) continue;
+    const o = originals.get(l.reversesMovementId);
+    const mirrored = o && o.type === l.type && o.variantId === l.variantId && o.warehouseId === l.warehouseId
+      && o.binId === l.binId && o.batchId === l.batchId
+      && dec(o.dOnHand).neg().eq(l.d.onHand) && dec(o.dBlocked).neg().eq(l.d.blocked) && dec(o.dDamaged).neg().eq(l.d.damaged)
+      && dec(o.dExpired).neg().eq(l.d.expired) && dec(o.dReserved).neg().eq(l.d.reserved);
+    if (!mirrored) throw new AppError("validation_error", "A reversal must mirror its original movement", { movementId: l.reversesMovementId });
+    l.unitCost = o.unitCost ?? 0;
   }
 }
 

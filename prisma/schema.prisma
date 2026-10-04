@@ -73,6 +73,9 @@ model User {
   roles             UserRole[]
   warehouses        UserWarehouse[]
   managedWarehouses Warehouse[]     @relation("WarehouseManager")
+  createdPos        PurchaseOrder[] @relation("PoCreator")
+  poApprovals       PoApproval[]    @relation("PoApprover")
+  receipts          GoodsReceipt[]  @relation("ReceiptReceiver")
 
   @@unique([companyId, id])
   @@index([companyId])
@@ -135,6 +138,9 @@ model Warehouse {
   inventoryMovements InventoryMovement[]
   reservations       Reservation[]
   userWarehouses     UserWarehouse[]
+  purchaseOrders     PurchaseOrder[]
+  goodsReceipts      GoodsReceipt[]
+  serialUnits        SerialUnit[]
 
   @@unique([companyId, code])
   @@unique([companyId, id])
@@ -161,6 +167,8 @@ model Bin {
   warehouse          Warehouse           @relation(fields: [warehouseId], references: [id])
   stockBalances      StockBalance[]
   inventoryMovements InventoryMovement[]
+  receiptLines       ReceiptLine[]
+  serialUnits        SerialUnit[]
 
   @@unique([warehouseId, code])
   @@map("bin")
@@ -241,6 +249,9 @@ model ProductVariant {
   variantCosts       VariantCost[]
   inventoryMovements InventoryMovement[]
   reservations       Reservation[]
+  poLines            PoLine[]
+  receiptLines       ReceiptLine[]
+  serialUnits        SerialUnit[]
 
   @@unique([companyId, sku])
   @@unique([companyId, barcode])
@@ -262,6 +273,8 @@ model Batch {
   stockAllocations   StockAllocation[]
   inventoryMovements InventoryMovement[]
   reservationLines   ReservationLine[]
+  receiptLines       ReceiptLine[]
+  serialUnits        SerialUnit[]
 
   @@unique([variantId, batchNo])
   @@map("batch")
@@ -858,27 +871,29 @@ enum AddressType {
 }
 
 model Supplier {
-  id                 String       @id @default(uuid(7))
-  companyId          String       @map("company_id")
-  code               String // SUP-0001, from `sequences`
-  name               String
-  status             MasterStatus @default(active)
-  taxId              String?      @map("tax_id")
-  paymentTerms       PaymentTerms @default(net30) @map("payment_terms")
-  creditLimit        Decimal?     @map("credit_limit") @db.Decimal(18, 2)
-  currency           String // SUP-05: PO currency = supplier currency
-  leadTimeDays       Int?         @map("lead_time_days")
-  notes              String?
-  requiresInspection Boolean      @default(false) @map("requires_inspection")
-  version            Int          @default(0)
-  createdAt          DateTime     @default(now()) @map("created_at")
-  updatedAt          DateTime     @default(now()) @updatedAt @map("updated_at")
+  id                  String       @id @default(uuid(7))
+  companyId           String       @map("company_id")
+  code                String // SUP-0001, from `sequences`
+  name                String
+  status              MasterStatus @default(active)
+  taxId               String?      @map("tax_id")
+  paymentTerms        PaymentTerms @default(net30) @map("payment_terms")
+  creditLimit         Decimal?     @map("credit_limit") @db.Decimal(18, 2)
+  currency            String // SUP-05: PO currency = supplier currency
+  leadTimeDays        Int?         @map("lead_time_days")
+  notes               String?
+  requiresInspection  Boolean      @default(false) @map("requires_inspection")
+  receiptTolerancePct Decimal?     @map("receipt_tolerance_pct") @db.Decimal(5, 2) // PO-10; null = company setting
+  version             Int          @default(0)
+  createdAt           DateTime     @default(now()) @map("created_at")
+  updatedAt           DateTime     @default(now()) @updatedAt @map("updated_at")
 
-  company   Company            @relation(fields: [companyId], references: [id])
-  contacts  SupplierContact[]
-  addresses SupplierAddress[]
-  products  SupplierProduct[]
-  documents SupplierDocument[]
+  company        Company            @relation(fields: [companyId], references: [id])
+  contacts       SupplierContact[]
+  addresses      SupplierAddress[]
+  products       SupplierProduct[]
+  documents      SupplierDocument[]
+  purchaseOrders PurchaseOrder[]
 
   @@unique([companyId, code])
   @@map("supplier")
@@ -948,4 +963,221 @@ model SupplierDocument {
   supplier Supplier @relation(fields: [supplierId], references: [id])
 
   @@map("supplier_document")
+}
+
+// ───────────────────────── Part 4: purchasing + receiving ─────────────────────────
+// Docs 09/10/14, state machine doc 23. Lines and receipts are never deleted (PO-09, MV-05).
+
+enum PoStatus {
+  draft
+  submitted
+  approved
+  ordered
+  partially_received
+  fully_received
+  closed
+  cancelled
+
+  @@map("po_status")
+}
+
+model PurchaseOrder {
+  id           String    @id @default(uuid(7))
+  companyId    String    @map("company_id")
+  number       String // PO-YYYY-00001, immutable (PO-08)
+  supplierId   String    @map("supplier_id")
+  supplierName String    @map("supplier_name")
+  warehouseId  String    @map("warehouse_id") // the one receiving warehouse (PO-06)
+  status       PoStatus  @default(draft)
+  currency     String // = supplier currency (SUP-05)
+  subtotal     Decimal   @default(0) @db.Decimal(18, 4)
+  discount     Decimal   @default(0) @db.Decimal(18, 4)
+  tax          Decimal   @default(0) @db.Decimal(18, 4)
+  shipping     Decimal   @default(0) @db.Decimal(18, 4)
+  total        Decimal   @default(0) @db.Decimal(18, 4)
+  expectedDate DateTime? @map("expected_date") @db.Date
+  notes        String?
+  closeReason  String?   @map("close_reason")
+  createdBy    String    @map("created_by")
+  approvedBy   String?   @map("approved_by")
+  approvedAt   DateTime? @map("approved_at")
+  orderedAt    DateTime? @map("ordered_at")
+  closedAt     DateTime? @map("closed_at")
+  version      Int       @default(0)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  supplier  Supplier       @relation(fields: [supplierId], references: [id])
+  warehouse Warehouse      @relation(fields: [warehouseId], references: [id])
+  creator   User           @relation("PoCreator", fields: [createdBy], references: [id])
+  lines     PoLine[]
+  approvals PoApproval[]
+  receipts  GoodsReceipt[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@index([supplierId, status])
+  @@index([warehouseId, status])
+  @@map("purchase_order")
+}
+
+model PoLine {
+  id              String  @id @default(uuid(7))
+  poId            String  @map("po_id")
+  lineNo          Int     @map("line_no")
+  variantId       String  @map("variant_id")
+  sku             String // snapshots
+  name            String
+  orderUom        String  @map("order_uom")
+  uomFactor       Decimal @map("uom_factor") @db.Decimal(18, 6)
+  qtyOrdered      Decimal @map("qty_ordered") @db.Decimal(18, 4) // in order_uom
+  qtyOrderedBase  Decimal @map("qty_ordered_base") @db.Decimal(18, 4)
+  qtyReceivedBase Decimal @default(0) @map("qty_received_base") @db.Decimal(18, 4) // accepted only (RC-03)
+  qtyReturnedBase Decimal @default(0) @map("qty_returned_base") @db.Decimal(18, 4) // Part 7
+  unitPrice       Decimal @map("unit_price") @db.Decimal(18, 4) // per order_uom
+  discountPct     Decimal @default(0) @map("discount_pct") @db.Decimal(5, 2)
+  taxPct          Decimal @default(0) @map("tax_pct") @db.Decimal(5, 2)
+  lineTotal       Decimal @map("line_total") @db.Decimal(18, 4)
+  requiresBatch   Boolean @map("requires_batch")
+  requiresExpiry  Boolean @map("requires_expiry")
+  removed         Boolean @default(false)
+
+  po           PurchaseOrder  @relation(fields: [poId], references: [id])
+  variant      ProductVariant @relation(fields: [variantId], references: [id])
+  receiptLines ReceiptLine[]
+
+  @@unique([poId, lineNo])
+  @@index([variantId])
+  @@map("po_line")
+}
+
+model PoApproval {
+  id        String   @id @default(uuid(7))
+  poId      String   @map("po_id")
+  actorId   String   @map("actor_id")
+  decision  String // approved | rejected
+  amount    Decimal  @db.Decimal(18, 4)
+  comment   String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  po    PurchaseOrder @relation(fields: [poId], references: [id])
+  actor User          @relation("PoApprover", fields: [actorId], references: [id])
+
+  @@index([poId])
+  @@map("po_approval")
+}
+
+enum ExcessStatus {
+  pending
+  approved
+  rejected
+  reversed
+
+  @@map("excess_status")
+}
+
+model GoodsReceipt {
+  id                  String   @id @default(uuid(7))
+  companyId           String   @map("company_id")
+  number              String // GRN-YYYY-00001
+  poId                String   @map("po_id")
+  warehouseId         String   @map("warehouse_id")
+  supplierRef         String?  @map("supplier_ref") // delivery note / invoice ref
+  note                String?
+  receivedBy          String   @map("received_by")
+  receivedAt          DateTime @default(now()) @map("received_at")
+  reversalOfReceiptId String?  @unique @map("reversal_of_receipt_id") // RC-08: one reversal per receipt
+  idempotencyKey      String?  @map("idempotency_key")
+
+  po         PurchaseOrder @relation(fields: [poId], references: [id])
+  warehouse  Warehouse     @relation(fields: [warehouseId], references: [id])
+  receiver   User          @relation("ReceiptReceiver", fields: [receivedBy], references: [id])
+  reversalOf GoodsReceipt? @relation("ReceiptReversal", fields: [reversalOfReceiptId], references: [id])
+  reversal   GoodsReceipt? @relation("ReceiptReversal")
+  lines      ReceiptLine[]
+
+  @@unique([companyId, number])
+  @@index([poId])
+  @@map("goods_receipt")
+}
+
+// Quantities are base units except order_qty (in order_uom).
+model ReceiptLine {
+  id               String        @id @default(uuid(7))
+  receiptId        String        @map("receipt_id")
+  lineNo           Int           @map("line_no")
+  poLineId         String?       @map("po_line_id") // null for a wrong-product line
+  variantId        String        @map("variant_id")
+  wrongProduct     Boolean       @default(false) @map("wrong_product")
+  held             Boolean       @default(true) // wrong product physically kept → blocked_in
+  orderUom         String        @map("order_uom")
+  uomFactor        Decimal       @map("uom_factor") @db.Decimal(18, 6) // snapshot (RC-06)
+  orderQty         Decimal       @map("order_qty") @db.Decimal(18, 4)
+  baseQty          Decimal       @map("base_qty") @db.Decimal(18, 4)
+  qtyAccepted      Decimal       @default(0) @map("qty_accepted") @db.Decimal(18, 4)
+  qtyDamaged       Decimal       @default(0) @map("qty_damaged") @db.Decimal(18, 4)
+  qtyExpired       Decimal       @default(0) @map("qty_expired") @db.Decimal(18, 4)
+  qtyExcessBlocked Decimal       @default(0) @map("qty_excess_blocked") @db.Decimal(18, 4)
+  qtyMissing       Decimal       @default(0) @map("qty_missing") @db.Decimal(18, 4) // claim info, no movement
+  inspection       Boolean       @default(false) // accepted went to blocked (RC-05)
+  batchId          String?       @map("batch_id")
+  binId            String        @map("bin_id")
+  unitCost         Decimal?      @map("unit_cost") @db.Decimal(18, 4)
+  note             String?
+  excessStatus     ExcessStatus? @map("excess_status")
+  excessDecidedBy  String?       @map("excess_decided_by")
+  excessDecidedAt  DateTime?     @map("excess_decided_at")
+  excessComment    String?       @map("excess_comment")
+
+  receipt GoodsReceipt   @relation(fields: [receiptId], references: [id])
+  poLine  PoLine?        @relation(fields: [poLineId], references: [id])
+  variant ProductVariant @relation(fields: [variantId], references: [id])
+  batch   Batch?         @relation(fields: [batchId], references: [id])
+  bin     Bin            @relation(fields: [binId], references: [id])
+  serials SerialUnit[]
+
+  @@unique([receiptId, lineNo])
+  @@index([poLineId])
+  @@index([excessStatus])
+  @@map("receipt_line")
+}
+
+enum SerialStatus {
+  in_stock
+  reserved
+  sold
+  in_transit
+  quarantine
+  damaged
+  disposed
+  returned_pending
+  reversed
+
+  @@map("serial_status")
+}
+
+// Doc 14 §3. One unit = one row (I-06). serial_no unique per company among
+// non-reversed units (partial unique index in the migration SQL).
+model SerialUnit {
+  id            String       @id @default(uuid(7))
+  companyId     String       @map("company_id")
+  variantId     String       @map("variant_id")
+  serialNo      String       @map("serial_no")
+  batchId       String?      @map("batch_id")
+  status        SerialStatus
+  warehouseId   String       @map("warehouse_id")
+  binId         String?      @map("bin_id")
+  receiptLineId String?      @map("receipt_line_id")
+  version       Int          @default(0)
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  variant     ProductVariant @relation(fields: [variantId], references: [id])
+  batch       Batch?         @relation(fields: [batchId], references: [id])
+  warehouse   Warehouse      @relation(fields: [warehouseId], references: [id])
+  bin         Bin?           @relation(fields: [binId], references: [id])
+  receiptLine ReceiptLine?   @relation(fields: [receiptLineId], references: [id])
+
+  @@index([variantId, warehouseId, status])
+  @@map("serial_unit")
 }
