@@ -6,6 +6,8 @@ Immutable, append-only ledger. Every quantity change creates ≥1 movement in th
 ## 2. Movement Schema (conceptual)
 `id, company_id*, variant_id, warehouse_id, bin_id?, batch_id?, serial_id?, type, qty_delta (+/-), balance_after {on_hand,damaged,expired,blocked} (the touched bin row) + reserved_after (the position's `stock_allocation`), unit_cost_snapshot, linked_receipt_id? (for purchase returns), linked_fulfilment_ref? (for sales-return restock), uom + uom_factor_used, source_type (purchase_receipt|transfer|adjustment|reservation|fulfilment|return|count|expiry_job|damage|repair|disposal|putaway|opening|system), source_id, reverses_movement_id?, reason_code, note, actor_id (or system), idempotency_key (unique), created_at (immutable)`.
 
+**Storage form (normative):** `qty_delta` is stored as signed per-bucket deltas `d_on_hand, d_blocked, d_damaged, d_expired, d_reserved` (a bucket move such as `damage` is `d_on_hand −n, d_damaged +n` on one row; `sale_fulfilment` is `d_on_hand −n, d_reserved −n`). Reservation legs carry no `bin_id`. Replay is then a plain `SUM` per bin (physical buckets) and per position (reserved). WAC lives per (variant, warehouse) in `variant_cost`.
+
 Putaway is recorded as TWO legs (`putaway_out` −bin A, `putaway_in` +bin B, same `source_id`, net 0) so per-bin replay stays exact.
 
 ## 3. Movement Types (closed list, extensible only by migration)

@@ -12,3 +12,419 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+// ───────────────────────── Part 1: minimal masters ─────────────────────────
+// Full catalog/warehouse models arrive in Part 3; auth fields in Part 2.
+
+model Company {
+  id        String   @id @default(uuid(7))
+  name      String
+  currency  String   @default("USD")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  users              User[]
+  warehouses         Warehouse[]
+  bins               Bin[]
+  products           Product[]
+  variants           ProductVariant[]
+  batches            Batch[]
+  stockBalances      StockBalance[]
+  stockAllocations   StockAllocation[]
+  variantCosts       VariantCost[]
+  inventoryMovements InventoryMovement[]
+  auditLogs          AuditLog[]
+  sequences          Sequence[]
+  idempotencyRecords IdempotencyRecord[]
+  reservations       Reservation[]
+
+  @@map("company")
+}
+
+model User {
+  id        String   @id @default(uuid(7))
+  companyId String   @map("company_id")
+  name      String
+  isSystem  Boolean  @default(false) @map("is_system")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId])
+  @@map("user")
+}
+
+enum MasterStatus {
+  active
+  inactive
+  archived
+
+  @@map("master_status")
+}
+
+enum VariantStatus {
+  active
+  discontinued
+  archived
+
+  @@map("variant_status")
+}
+
+enum BinType {
+  sellable
+  receiving
+  quarantine
+  damaged
+
+  @@map("bin_type")
+}
+
+model Warehouse {
+  id        String       @id @default(uuid(7))
+  companyId String       @map("company_id")
+  code      String
+  name      String
+  status    MasterStatus @default(active)
+  version   Int          @default(0)
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  company            Company             @relation(fields: [companyId], references: [id])
+  bins               Bin[]
+  stockBalances      StockBalance[]
+  stockAllocations   StockAllocation[]
+  variantCosts       VariantCost[]
+  inventoryMovements InventoryMovement[]
+  reservations       Reservation[]
+
+  @@unique([companyId, code])
+  @@map("warehouse")
+}
+
+model Bin {
+  id                 String   @id @default(uuid(7))
+  companyId          String   @map("company_id")
+  warehouseId        String   @map("warehouse_id")
+  code               String
+  type               BinType
+  isDefaultSellable  Boolean  @default(false) @map("is_default_sellable")
+  isDefaultReceiving Boolean  @default(false) @map("is_default_receiving")
+  archived           Boolean  @default(false)
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  company            Company             @relation(fields: [companyId], references: [id])
+  warehouse          Warehouse           @relation(fields: [warehouseId], references: [id])
+  stockBalances      StockBalance[]
+  inventoryMovements InventoryMovement[]
+
+  @@unique([warehouseId, code])
+  @@map("bin")
+}
+
+model Product {
+  id             String        @id @default(uuid(7))
+  companyId      String        @map("company_id")
+  name           String
+  status         VariantStatus @default(active)
+  requiresBatch  Boolean       @default(false) @map("requires_batch")
+  requiresExpiry Boolean       @default(false) @map("requires_expiry")
+  isSerialized   Boolean       @default(false) @map("is_serialized")
+  baseUom        String        @default("each") @map("base_uom")
+  version        Int           @default(0)
+  createdAt      DateTime      @default(now()) @map("created_at")
+
+  company  Company          @relation(fields: [companyId], references: [id])
+  variants ProductVariant[]
+
+  @@index([companyId])
+  @@map("product")
+}
+
+model ProductVariant {
+  id        String        @id @default(uuid(7))
+  companyId String        @map("company_id")
+  productId String        @map("product_id")
+  sku       String
+  barcode   String?
+  status    VariantStatus @default(active)
+  version   Int           @default(0)
+  createdAt DateTime      @default(now()) @map("created_at")
+
+  company            Company             @relation(fields: [companyId], references: [id])
+  product            Product             @relation(fields: [productId], references: [id])
+  batches            Batch[]
+  stockBalances      StockBalance[]
+  stockAllocations   StockAllocation[]
+  variantCosts       VariantCost[]
+  inventoryMovements InventoryMovement[]
+  reservations       Reservation[]
+
+  @@unique([companyId, sku])
+  @@unique([companyId, barcode])
+  @@map("product_variant")
+}
+
+model Batch {
+  id         String    @id @default(uuid(7))
+  companyId  String    @map("company_id")
+  variantId  String    @map("variant_id")
+  batchNo    String    @map("batch_no")
+  mfgDate    DateTime? @map("mfg_date") @db.Date
+  expiryDate DateTime? @map("expiry_date") @db.Date
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  company            Company             @relation(fields: [companyId], references: [id])
+  variant            ProductVariant      @relation(fields: [variantId], references: [id])
+  stockBalances      StockBalance[]
+  stockAllocations   StockAllocation[]
+  inventoryMovements InventoryMovement[]
+  reservationLines   ReservationLine[]
+
+  @@unique([variantId, batchNo])
+  @@map("batch")
+}
+
+// ───────────────────────── Part 1: ledger ─────────────────────────
+// Only src/server/inventory/ writes stock_balance, stock_allocation,
+// inventory_movement, variant_cost. Position keys with nullable batch_id are
+// UNIQUE NULLS NOT DISTINCT and live in the migration SQL.
+
+// Physical buckets per bin (doc 07 §2). No reserved, no in_transit.
+model StockBalance {
+  id          String   @id @default(uuid(7))
+  companyId   String   @map("company_id")
+  variantId   String   @map("variant_id")
+  warehouseId String   @map("warehouse_id")
+  binId       String   @map("bin_id")
+  batchId     String?  @map("batch_id")
+  onHand      Decimal  @default(0) @map("on_hand") @db.Decimal(18, 4)
+  blocked     Decimal  @default(0) @db.Decimal(18, 4)
+  damaged     Decimal  @default(0) @db.Decimal(18, 4)
+  expired     Decimal  @default(0) @db.Decimal(18, 4)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  company   Company        @relation(fields: [companyId], references: [id])
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  warehouse Warehouse      @relation(fields: [warehouseId], references: [id])
+  bin       Bin            @relation(fields: [binId], references: [id])
+  batch     Batch?         @relation(fields: [batchId], references: [id])
+
+  // Re-created NULLS NOT DISTINCT in the migration SQL.
+  @@unique([variantId, warehouseId, binId, batchId], map: "stock_balance_position_key")
+  @@index([companyId, variantId, warehouseId])
+  @@map("stock_balance")
+}
+
+// One row per reservable position (variant, warehouse, batch?). The ATP lock target.
+model StockAllocation {
+  id          String   @id @default(uuid(7))
+  companyId   String   @map("company_id")
+  variantId   String   @map("variant_id")
+  warehouseId String   @map("warehouse_id")
+  batchId     String?  @map("batch_id")
+  qtyReserved Decimal  @default(0) @map("qty_reserved") @db.Decimal(18, 4)
+  version     Int      @default(0)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  company   Company        @relation(fields: [companyId], references: [id])
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  warehouse Warehouse      @relation(fields: [warehouseId], references: [id])
+  batch     Batch?         @relation(fields: [batchId], references: [id])
+
+  // Re-created NULLS NOT DISTINCT in the migration SQL.
+  @@unique([variantId, warehouseId, batchId], map: "stock_allocation_position_key")
+  @@index([companyId, variantId, warehouseId])
+  @@map("stock_allocation")
+}
+
+// Moving-average cost per (variant, warehouse) — doc 15. WAC = value / qty, where qty
+// counts every physical bucket (on_hand+blocked+damaged+expired). Keeping value (not a
+// rounded WAC) makes SUM(movement.value_delta) == live value exactly (INV-022).
+model VariantCost {
+  companyId   String   @map("company_id")
+  variantId   String   @map("variant_id")
+  warehouseId String   @map("warehouse_id")
+  qty         Decimal  @default(0) @db.Decimal(18, 4)
+  value       Decimal  @default(0) @db.Decimal(18, 4)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  company   Company        @relation(fields: [companyId], references: [id])
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  warehouse Warehouse      @relation(fields: [warehouseId], references: [id])
+
+  @@id([variantId, warehouseId])
+  @@map("variant_cost")
+}
+
+enum MovementType {
+  opening_balance
+  purchase_receipt
+  sale_fulfilment
+  sale_return_quarantine
+  sale_return_restock
+  purchase_return
+  transfer_out
+  transfer_in
+  transfer_variance
+  adjustment_in
+  adjustment_out
+  cost_correction
+  damage
+  repair_to_stock
+  expiry
+  disposal
+  reservation
+  reservation_release
+  blocked_in
+  blocked_release
+  blocked_reject
+  putaway_out
+  putaway_in
+
+  @@map("movement_type")
+}
+
+// Append-only ledger (doc 08). Signed per-bucket deltas make replay a plain SUM.
+model InventoryMovement {
+  id                 String       @id @default(uuid(7))
+  companyId          String       @map("company_id")
+  variantId          String       @map("variant_id")
+  warehouseId        String       @map("warehouse_id")
+  binId              String?      @map("bin_id")
+  batchId            String?      @map("batch_id")
+  type               MovementType
+  dOnHand            Decimal      @default(0) @map("d_on_hand") @db.Decimal(18, 4)
+  dBlocked           Decimal      @default(0) @map("d_blocked") @db.Decimal(18, 4)
+  dDamaged           Decimal      @default(0) @map("d_damaged") @db.Decimal(18, 4)
+  dExpired           Decimal      @default(0) @map("d_expired") @db.Decimal(18, 4)
+  dReserved          Decimal      @default(0) @map("d_reserved") @db.Decimal(18, 4)
+  onHandAfter        Decimal?     @map("on_hand_after") @db.Decimal(18, 4)
+  blockedAfter       Decimal?     @map("blocked_after") @db.Decimal(18, 4)
+  damagedAfter       Decimal?     @map("damaged_after") @db.Decimal(18, 4)
+  expiredAfter       Decimal?     @map("expired_after") @db.Decimal(18, 4)
+  reservedAfter      Decimal      @map("reserved_after") @db.Decimal(18, 4)
+  unitCost           Decimal?     @map("unit_cost_snapshot") @db.Decimal(18, 4)
+  valueDelta         Decimal      @default(0) @map("value_delta") @db.Decimal(18, 4)
+  sourceType         String       @map("source_type")
+  sourceId           String       @map("source_id")
+  reversesMovementId String?      @map("reverses_movement_id")
+  reasonCode         String       @map("reason_code")
+  note               String?
+  actorId            String       @map("actor_id")
+  channel            String?
+  idempotencyKey     String       @map("idempotency_key")
+  createdAt          DateTime     @default(now()) @map("created_at")
+
+  company   Company             @relation(fields: [companyId], references: [id])
+  variant   ProductVariant      @relation(fields: [variantId], references: [id])
+  warehouse Warehouse           @relation(fields: [warehouseId], references: [id])
+  bin       Bin?                @relation(fields: [binId], references: [id])
+  batch     Batch?              @relation(fields: [batchId], references: [id])
+  reverses  InventoryMovement?  @relation("Reversal", fields: [reversesMovementId], references: [id])
+  reversals InventoryMovement[] @relation("Reversal")
+
+  @@unique([companyId, idempotencyKey])
+  @@index([companyId, variantId, warehouseId, createdAt])
+  @@index([companyId, sourceType, sourceId])
+  @@map("inventory_movement")
+}
+
+model AuditLog {
+  id             String   @id @default(uuid(7))
+  companyId      String   @map("company_id")
+  at             DateTime @default(now())
+  actorId        String   @map("actor_id")
+  action         String
+  entityType     String   @map("entity_type")
+  entityId       String   @map("entity_id")
+  warehouseId    String?  @map("warehouse_id")
+  before         Json?
+  after          Json?
+  reason         String?
+  channel        String?
+  requestId      String?  @map("request_id")
+  idempotencyKey String?  @map("idempotency_key")
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, entityType, entityId])
+  @@index([companyId, at])
+  @@map("audit_log")
+}
+
+// Per-company document numbering, allocated inside the posting transaction.
+model Sequence {
+  companyId String @map("company_id")
+  name      String
+  next      BigInt @default(1)
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@id([companyId, name])
+  @@map("sequences")
+}
+
+// Client Idempotency-Key → stored response (MV-02 layer 1).
+model IdempotencyRecord {
+  companyId   String   @map("company_id")
+  key         String
+  scope       String
+  requestHash String   @map("request_hash")
+  response    Json
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@id([companyId, key])
+  @@map("idempotency_record")
+}
+
+// ───────────────────────── Part 1: reservations ─────────────────────────
+
+enum ReservationStatus {
+  active
+  partially_fulfilled
+  fulfilled
+  cancelled
+  expired
+
+  @@map("reservation_status")
+}
+
+model Reservation {
+  id           String            @id @default(uuid(7))
+  companyId    String            @map("company_id")
+  variantId    String            @map("variant_id")
+  warehouseId  String            @map("warehouse_id")
+  qty          Decimal           @db.Decimal(18, 4)
+  qtyFulfilled Decimal           @default(0) @map("qty_fulfilled") @db.Decimal(18, 4)
+  qtyReleased  Decimal           @default(0) @map("qty_released") @db.Decimal(18, 4)
+  status       ReservationStatus @default(active)
+  expiresAt    DateTime          @map("expires_at")
+  orderRef     String?           @map("order_ref")
+  version      Int               @default(0)
+  createdBy    String            @map("created_by")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @default(now()) @updatedAt @map("updated_at")
+
+  company   Company           @relation(fields: [companyId], references: [id])
+  variant   ProductVariant    @relation(fields: [variantId], references: [id])
+  warehouse Warehouse         @relation(fields: [warehouseId], references: [id])
+  lines     ReservationLine[]
+
+  @@index([companyId, status, expiresAt])
+  @@map("reservation")
+}
+
+// FEFO batch pinning: one line per batch (batch_id null for untracked variants).
+model ReservationLine {
+  id            String  @id @default(uuid(7))
+  reservationId String  @map("reservation_id")
+  batchId       String? @map("batch_id")
+  qty           Decimal @db.Decimal(18, 4)
+  qtyFulfilled  Decimal @default(0) @map("qty_fulfilled") @db.Decimal(18, 4)
+  qtyReleased   Decimal @default(0) @map("qty_released") @db.Decimal(18, 4)
+
+  reservation Reservation @relation(fields: [reservationId], references: [id])
+  batch       Batch?      @relation(fields: [batchId], references: [id])
+
+  @@map("reservation_line")
+}

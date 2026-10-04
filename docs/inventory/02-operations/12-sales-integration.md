@@ -14,7 +14,7 @@ IMS does NOT own carts, checkout, payments, or customers. External channels (POS
 - **Allocate vs reserve:** V1 treats them as one step (reserve = allocate to a warehouse). Multi-warehouse allocation/sourcing logic is V1.5.
 
 ## 4. Rules
-- SO-01: Never reserve blocked/damaged/expired/in-transit. FEFO is MANDATORY for expirable variants: reservation must pin batch(es) oldest-expiry-first; substitution across batches requires caller `allow_substitution=true`, else fail with `batch_insufficient`.
+- SO-01: Never reserve blocked/damaged/expired/in-transit. FEFO is MANDATORY for expirable variants: reservation must pin batch(es) oldest-expiry-first; substitution across batches requires caller `allow_substitution=true`, else fail with `batch_insufficient`. **Clarified:** without a requested `batch_id`, the reservation is split FEFO across batches (one `reservation_line` per pinned batch; batches whose `expiry_date <= today` are skipped). With a requested `batch_id`, only that batch is used; if it can't cover the qty → `batch_insufficient`, unless `allow_substitution=true`, then the rest is filled FEFO from other batches.
 - SO-02: Fulfil requires active reservation (no direct decrement API in V1 except `sale_fulfilment` with reservation id; POS immediate-sale creates reservation+fulfil in one transaction).
 - SO-03: Oversell blocked by default. Backorders are future (explicit flag + separate flow, not silent negative).
 - SO-04: Order cancel after partial fulfil releases only unfulfilled remainder; fulfilled portion requires sales return flow.
