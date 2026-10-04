@@ -71,6 +71,20 @@ export async function reconcile(ctx: Ctx): Promise<Drift[]> {
           WHERE a.company_id = ${c}
           GROUP BY a.id HAVING a.qty_reserved > COALESCE(SUM(s.on_hand), 0)`),
 
+        // 5. I-06: serialized positions — SUM(on_hand) = live units (in_stock + reserved).
+        ...(await tx.$queryRaw<Row[]>`
+          WITH s AS (
+            SELECT b.variant_id, b.warehouse_id, b.batch_id, SUM(b.on_hand) q
+            FROM stock_balance b JOIN product_variant v ON v.id = b.variant_id JOIN product p ON p.id = v.product_id
+            WHERE b.company_id = ${c} AND p.is_serialized GROUP BY 1, 2, 3),
+          u AS (
+            SELECT variant_id, warehouse_id, batch_id, COUNT(*)::numeric q FROM serial_unit
+            WHERE company_id = ${c} AND status IN ('in_stock', 'reserved') GROUP BY 1, 2, 3)
+          SELECT 'serials' AS "check", COALESCE(s.variant_id, u.variant_id) variant_id, COALESCE(s.warehouse_id, u.warehouse_id) warehouse_id,
+                 COALESCE(s.batch_id, u.batch_id) batch_id, trim_scale(COALESCE(s.q, 0))::text expected, trim_scale(COALESCE(u.q, 0))::text actual
+          FROM s FULL JOIN u ON s.variant_id = u.variant_id AND s.warehouse_id = u.warehouse_id AND s.batch_id IS NOT DISTINCT FROM u.batch_id
+          WHERE COALESCE(s.q, 0) <> COALESCE(u.q, 0)`),
+
         // 4. Valuation layer: qty = SUM(physical deltas), value = SUM(value_delta) (INV-022).
         ...(await tx.$queryRaw<Row[]>`
           WITH m AS (

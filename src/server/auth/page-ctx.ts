@@ -30,11 +30,12 @@ export async function runAction<T>(
   fn: (tx: Tx, ctx: Ctx) => Promise<T>,
   ok = "Saved",
   redirectTo?: (result: T) => string, // e.g. to the record just created
+  idempotencyKey?: string, // stock postings: a key rendered into the form, so a double submit replays
 ): Promise<ActionState> {
   const ctx = await pageCtx();
   let result: T;
   try {
-    result = (await execute(ctx, { scope }, (tx) => fn(tx, ctx))) as T;
+    result = (await execute(ctx, { scope, idempotencyKey, request: { scope } }, (tx) => fn(tx, ctx))) as T;
   } catch (e) {
     if (e instanceof AppError) return { error: e.message, at: Date.now() };
     if (e && typeof e === "object" && "issues" in e) return { error: "Invalid input", at: Date.now() };

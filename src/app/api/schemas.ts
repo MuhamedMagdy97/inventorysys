@@ -54,6 +54,7 @@ const supplierFields = {
   leadTimeDays: z.number().int().min(0).max(3650).nullable().optional(),
   notes: text(5000).nullable().optional(),
   requiresInspection: z.boolean().optional(),
+  receiptTolerancePct: zMoney,
 };
 export const SupplierCreate = z.object(supplierFields);
 export const SupplierPatch = z.object({ ...zVersion, ...supplierFields, name: text(200).optional(), status: zMaster.optional() });
@@ -65,3 +66,33 @@ export const WarehousePatch = z.object({
 const levels = { zone: text(30).nullable().optional(), rack: text(30).nullable().optional(), shelf: text(30).nullable().optional() };
 export const BinCreate = z.object({ code: text(30), type: z.enum(["sellable", "receiving", "quarantine", "damaged"]), ...levels });
 export const BinPatch = z.object({ ...zVersion, code: text(30).optional(), ...levels, makeDefault: z.enum(["sellable", "receiving"]).optional(), archived: z.boolean().optional() });
+
+// ───────────── Part 4: purchasing + receiving ─────────────
+const zQty4 = zDec.refine((s) => Number(s) > 0 && /^\d+(\.\d{1,4})?$/.test(s), "Must be > 0 with ≤ 4 decimals");
+const zQty0 = zDec.refine((s) => /^\d+(\.\d{1,4})?$/.test(s), "Max 4 decimals").optional();
+const zPct = zDec.refine((s) => Number(s) <= 100, "0–100").optional();
+const poLine = z.object({
+  id: zId.optional(), variantId: zId, qty: zQty4, uom: text(16).optional(),
+  unitPrice: zDec.optional(), discountPct: zPct, taxPct: zPct,
+});
+const poHeader = {
+  expectedDate: z.coerce.date().nullable().optional(), notes: text(5000).nullable().optional(),
+  discount: zDec.optional(), tax: zDec.optional(), shipping: zDec.optional(),
+};
+export const PoCreate = z.object({ ...poHeader, supplierId: zId, warehouseId: zId, lines: z.array(poLine).min(1).max(500) });
+export const PoPatch = z.object({ ...zVersion, ...poHeader, supplierId: zId.optional(), lines: z.array(poLine).min(1).max(500).optional() });
+export const PoAction = z.object({
+  ...zVersion, comment: text(2000).nullable().optional(), reason: text(2000).nullable().optional(),
+  lineId: zId.optional(), qty: zQty4.optional(), // reduce-line
+});
+export const ReceiptCreate = z.object({
+  poId: zId, supplierRef: text(100).nullable().optional(), note: text(2000).nullable().optional(),
+  lines: z.array(z.object({
+    poLineId: zId.optional(), variantId: zId.optional(), uom: text(16).optional(),
+    accepted: zQty0, damaged: zQty0, expired: zQty0, missing: zQty0, qty: zQty0, held: z.boolean().optional(),
+    binId: zId.optional(), batchNo: text(60).optional(), expiryDate: z.coerce.date().optional(), mfgDate: z.coerce.date().optional(),
+    serials: z.array(text(100)).max(10000).optional(), damagedSerials: z.array(text(100)).max(10000).optional(), note: text(2000).optional(),
+  }).refine((l) => !!l.poLineId !== !!l.variantId, "Give either poLineId or variantId (wrong product)")).min(1).max(500),
+});
+export const ReceiptReverse = z.object({ reason: text(2000) });
+export const ExcessDecision = z.object({ approve: z.boolean(), comment: text(2000).nullable().optional() });

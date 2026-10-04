@@ -47,6 +47,7 @@ export function fromDbError(e: unknown): AppError | null {
     const constraint = cause?.constraint?.index ?? cause?.originalMessage?.match(/"([^"]+)"/)?.[1];
     return new AppError("duplicate", "Already exists", { field: constraint?.match(/_([a-z]+)_key$/)?.[1], constraint });
   }
+  if (err?.code === "P2025") return new AppError("not_found", "Not found"); // findUniqueOrThrow & co.
   if (pg === "23514" || pg === "23503") {
     return new AppError("validation_error", "Rejected by a database rule", { constraint: cause?.originalMessage?.match(/constraint "([^"]+)"/)?.[1] });
   }

@@ -30,7 +30,7 @@ Format: `<resource>.<action>`. Canonical grants (no synonyms):
 - Admin: `users.view/manage`, `roles.manage`, `audit.view`, `settings.manage`, `imports.run`, `sequences.view`
 - System (break-glass, dual-approval only): `system.migration_run` (admin executes + auditor approves; auditor alone can never post)
 
-There is no `purchases.receive` grant — receiving is `inventory.receive` (physical posting); PO state progression from a receipt additionally requires `purchases.view`. All approval grants may carry `limit_amount`; over-limit routes upward (INV-020).
+There is no `purchases.receive` grant — receiving is `inventory.receive` (physical posting) scoped to the PO's warehouse; that grant also lets the receiver look up POs targeting their warehouses, and the PO state progression is a consequence of the posting (no `purchases.*` grant needed). Receipt reversal (doc 10 RC-08) needs `inventory.adjust_approve` in the warehouse, limit-checked on the reversed value. All approval grants may carry `limit_amount`; over-limit routes upward (INV-020).
 
 ## 3. Scoping Rules
 - **Global vs warehouse-scoped:** `inventory.*` (incl. receive, transfer_*, count_*, adjust_*, damage/repair/dispose, inspect), `sales.reserve/fulfil/return_receive/return_inspect`, and `purchases.return_ship` are warehouse-scoped via `user_warehouses(user_id, warehouse_id)`. All other permissions global.

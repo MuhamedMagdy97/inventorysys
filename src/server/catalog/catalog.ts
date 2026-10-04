@@ -248,10 +248,12 @@ export async function updateProduct(
   return after;
 }
 
-// Archiving must not strand reservations; Part 4/6 add open PO lines and transfers here.
-async function assertNoOpenReservations(tx: Tx, where: Prisma.ReservationWhereInput) {
+// Archiving must not strand reservations or open PO lines (flow 3); Part 6 adds transfers.
+async function assertNoOpenReservations(tx: Tx, where: Prisma.ReservationWhereInput & Prisma.PoLineWhereInput) {
   const open = await tx.reservation.count({ where: { ...where, status: { in: ["active", "partially_fulfilled"] } } });
   if (open) throw new AppError("conflict", `Release or fulfil the ${open} open reservation(s) first`, { reason: "open_reservations", count: open });
+  const lines = await tx.poLine.count({ where: { ...where, removed: false, po: { status: { in: ["draft", "submitted", "approved", "ordered", "partially_received"] } } } });
+  if (lines) throw new AppError("conflict", `Close or cancel the ${lines} open PO line(s) first`, { reason: "open_po_lines", count: lines });
 }
 
 async function findProduct(tx: Tx, ctx: Ctx, id: string) {
