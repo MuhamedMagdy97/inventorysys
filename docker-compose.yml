@@ -1,0 +1,16 @@
+# Local Postgres for dev + tests. Port 5433 to avoid clashing with any local Postgres.
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: inventory
+      POSTGRES_PASSWORD: inventory
+      POSTGRES_DB: inventory
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./docker/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+
+volumes:
+  pgdata:

@@ -1,0 +1,14 @@
+// Inventory Management System — Prisma schema.
+// Spec: docs/inventory/03-governance/22-entity-model.md (entities) + 07/08 (balances, ledger).
+// Models are added slice by slice per docs/inventory/07-build/01-build-plan.md.
+// Constraints Prisma can't express (CHECK >= 0, append-only triggers, NULLS NOT DISTINCT)
+// go into hand-edited migrations: `npx prisma migrate dev --create-only`, edit SQL, then `migrate dev`.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
