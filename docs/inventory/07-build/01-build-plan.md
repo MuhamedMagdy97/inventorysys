@@ -31,18 +31,18 @@ A task is **done** only when its check passes. Never start a Part while the prev
 - [x] T0.6 CI workflow (lint, typecheck, test, build)
 - [ ] T0.7 First commit + push to GitHub (owner's call)
 
-## Part 1 — Ledger engine core (closes P4 gate) ⚠ highest risk, don't rush
+## Part 1 — Ledger engine core (closes P4 gate) ⚠ highest risk, don't rush — tasks ✅ 2026-10-04; tag `part-1` after CI is green
 Spec: 07, 08, 14 §2, 15 §1, 18, 19 (INV-001–004, 011, 017, 021–023, 025), 21 (#1, 2, 13, 16, 17, 26, 31, 32, 38).
-- T1.1 **Core plumbing:** `src/server/core/`: `Ctx` type, `AppError` + the spec error codes, `withApi()` route wrapper, Zod helpers. ✅ when: unit test maps every code → HTTP status.
-- T1.2 **Minimal masters (schema):** `company`, `user` (id/name/company only; auth comes in Part 2), `warehouse`, `bin` (types + default bins), `product`, `product_variant` (sku, flags, status), `batch`. All with `company_id`. ✅ when: migration applies; seed creates 1 company, 1 warehouse with default bins, 2 variants.
-- T1.3 **Ledger schema:** `stock_balance` (per bin, physical buckets), `stock_allocation` (per position, `qty_reserved`, `version`), `inventory_movement` (doc 08 fields), `audit_log`, `sequences`, `idempotency_record` (key → stored response). Hand SQL: `CHECK >= 0` on every bucket, `UNIQUE NULLS NOT DISTINCT` position/balance keys, unique `idempotency_key` per movement leg, triggers blocking UPDATE/DELETE on `inventory_movement` + `audit_log`. ✅ when: tests prove a negative bucket, an UPDATE on a movement, and a duplicate leg key are all rejected **by the DB**.
-- T1.4 **`postMovements(tx, ctx, legs[])`**: the only writer. Locks allocation row then bin rows (ordered), applies deltas, enforces I-01/02/03/07, writes movement rows with `balance_after`/`reserved_after` + cost snapshot, writes audit. ✅ when: unit tests per movement type in doc 08 table.
-- T1.5 **Reservations:** `reserve` (`allow_partial`, FEFO batch pinning, TTL), `release`, `fulfil` (version check, picks FEFO bins), `cancel`, plus a `reservation` table with `version`. ✅ when: partial fulfil + remainder release test passes.
-- T1.6 **Idempotency layer:** `withIdempotency(key, fn)` stores the response; a retry returns the original; derived per-leg keys (MV-02). ✅ when: the same request sent twice → one set of movements, identical response.
-- T1.7 **ATP + reconciler:** `getAvailability(ctx, variant, warehouse)`; `reconcile()` replays movements and compares them to balances and allocations. ✅ when: reconciler is clean after the whole test suite.
-- T1.8 **Concurrency suite (the gate):** 50 parallel reserves for the last 10 units → exactly 10 succeed; fulfil-vs-expire race → exactly one winner; double-post of the same receipt → one effect; random mixed operations (property test) → no invariant broken and reconciler clean.
-- T1.9 **WAC + point-in-time value:** WAC updated on inbound legs; `valueAt(T)` = replay of snapshots ≤ T. ✅ when: valueAt(now) == live valuation on seeded data (INV-022).
-- T1.10 API: `GET /api/availability`, `GET /api/balances`, `GET /api/movements`, `POST /api/reservations` (+ `/release`, `/fulfil`, `/cancel`).
+- [x] T1.1 **Core plumbing:** `src/server/core/`: `Ctx` type, `AppError` + the spec error codes, `withApi()` route wrapper, Zod helpers. ✅ when: unit test maps every code → HTTP status.
+- [x] T1.2 **Minimal masters (schema):** `company`, `user` (id/name/company only; auth comes in Part 2), `warehouse`, `bin` (types + default bins), `product`, `product_variant` (sku, flags, status), `batch`. All with `company_id`. ✅ when: migration applies; seed creates 1 company, 1 warehouse with default bins, 2 variants.
+- [x] T1.3 **Ledger schema:** `stock_balance` (per bin, physical buckets), `stock_allocation` (per position, `qty_reserved`, `version`), `inventory_movement` (doc 08 fields), `audit_log`, `sequences`, `idempotency_record` (key → stored response). Hand SQL: `CHECK >= 0` on every bucket, `UNIQUE NULLS NOT DISTINCT` position/balance keys, unique `idempotency_key` per movement leg, triggers blocking UPDATE/DELETE on `inventory_movement` + `audit_log`. ✅ when: tests prove a negative bucket, an UPDATE on a movement, and a duplicate leg key are all rejected **by the DB**.
+- [x] T1.4 **`postMovements(tx, ctx, legs[])`**: the only writer. Locks allocation row then bin rows (ordered), applies deltas, enforces I-01/02/03/07, writes movement rows with `balance_after`/`reserved_after` + cost snapshot, writes audit. ✅ when: unit tests per movement type in doc 08 table.
+- [x] T1.5 **Reservations:** `reserve` (`allow_partial`, FEFO batch pinning, TTL), `release`, `fulfil` (version check, picks FEFO bins), `cancel`, plus a `reservation` table with `version`. ✅ when: partial fulfil + remainder release test passes.
+- [x] T1.6 **Idempotency layer:** `withIdempotency(key, fn)` stores the response; a retry returns the original; derived per-leg keys (MV-02). ✅ when: the same request sent twice → one set of movements, identical response.
+- [x] T1.7 **ATP + reconciler:** `getAvailability(ctx, variant, warehouse)`; `reconcile()` replays movements and compares them to balances and allocations. ✅ when: reconciler is clean after the whole test suite.
+- [x] T1.8 **Concurrency suite (the gate):** 50 parallel reserves for the last 10 units → exactly 10 succeed; fulfil-vs-expire race → exactly one winner; double-post of the same receipt → one effect; random mixed operations (property test) → no invariant broken and reconciler clean.
+- [x] T1.9 **WAC + point-in-time value:** WAC updated on inbound legs; `valueAt(T)` = replay of snapshots ≤ T. ✅ when: valueAt(now) == live valuation on seeded data (INV-022).
+- [x] T1.10 API: `GET /api/availability`, `GET /api/balances`, `GET /api/movements`, `POST /api/reservations` (+ `/release`, `/fulfil`, `/cancel`).
 
 ## Part 2 — Auth, RBAC, warehouse scope, app shell (closes P1 gate)
 Spec: 02, 18, 26, 19 (INV-006, 013, 018, 020, 024).
