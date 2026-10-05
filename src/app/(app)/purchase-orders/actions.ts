@@ -2,22 +2,12 @@
 
 import { bool, clearable, str, version } from "@/app/ui/form";
 import { runAction, type ActionState } from "@/server/auth/page-ctx";
-import { lookupCodes } from "@/server/catalog/catalog";
+import { variantByCode as variantBySku } from "@/server/catalog/catalog";
 import type { Ctx } from "@/server/core/ctx";
-import { AppError } from "@/server/core/errors";
 import {
   approvePo, cancelPo, closePo, createPo, orderPo, reducePoLine, rejectPo, submitPo, updatePo, type PoLineInput,
 } from "@/server/purchasing/purchase-orders";
 import { decideExcess, postReceipt, reverseReceipt, type ReceiptLineInput } from "@/server/purchasing/receipts";
-
-// Typed or scanned code → exactly one variant (never auto-pick on ambiguity, P-CAT-02).
-async function variantBySku(ctx: Ctx, code: string) {
-  const [hit] = await lookupCodes(ctx, [code]);
-  if (!hit || hit.result !== "found") {
-    throw new AppError("validation_error", hit?.result === "ambiguous" ? `${code} matches ${hit.matches.map((m) => m.sku).join(", ")}; enter the exact SKU` : `${code}: SKU not found`);
-  }
-  return hit.matches[0].variantId;
-}
 
 // Line rows are named line.<i>.<field>; empty rows are skipped.
 async function poLines(ctx: Ctx, f: FormData): Promise<PoLineInput[]> {

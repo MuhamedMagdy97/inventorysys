@@ -64,6 +64,13 @@ export default async function UsersPage() {
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" name="isService" /> Service user (sales-channel API key; cannot sign in, no password)
             </label>
+            <label className="label max-w-xs">
+              Channel (service users: what their keys sell as)
+              <select name="salesChannel" defaultValue="api" className="input">
+                <option value="pos">POS</option><option value="web">Web shop</option>
+                <option value="marketplace">Marketplace</option><option value="api">Other API</option>
+              </select>
+            </label>
             <AccessFields roles={roles} warehouses={warehouses} />
           </ActionForm>
         </section>

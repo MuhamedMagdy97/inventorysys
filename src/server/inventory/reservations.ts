@@ -1,4 +1,4 @@
-import type { InventoryMovement, Reservation, ReservationLine } from "@/generated/prisma/client";
+import type { InventoryMovement, Reservation, ReservationLine, SalesChannel } from "@/generated/prisma/client";
 import { assertTransactable } from "@/server/catalog/catalog";
 import { writeAudit } from "@/server/core/audit";
 import { requirePermission, type Ctx } from "@/server/core/ctx";
@@ -13,25 +13,28 @@ const MAX_TTL_SECONDS = 30 * 24 * 3600;
 
 type WithLines = Reservation & { lines: ReservationLine[] };
 
-export async function reserve(
-  tx: Tx,
-  ctx: Ctx,
-  input: {
-    variantId: string;
-    warehouseId: string;
-    qty: DecValue;
-    batchId?: string;
-    allowPartial?: boolean;
-    allowSubstitution?: boolean;
-    ttlSeconds?: number;
-    orderRef?: string;
-  },
-) {
+// Batches with expiry_date <= today (UTC, server clock — edge #29) are expired.
+export const utcToday = (now = new Date()) => new Date(now.toISOString().slice(0, 10));
+
+export type ReserveInput = {
+  variantId: string;
+  warehouseId: string;
+  qty: DecValue;
+  batchId?: string;
+  allowPartial?: boolean;
+  allowSubstitution?: boolean;
+  ttlSeconds?: number;
+  externalOrderId?: string; // SO-07: groups reservations under one sales_order_ref
+  channel?: SalesChannel; // ignored for API keys: ctx.salesChannel wins (SO-06)
+};
+
+export async function reserve(tx: Tx, ctx: Ctx, input: ReserveInput) {
   await requirePermission(ctx, "sales.reserve", { warehouseId: input.warehouseId });
   const qty = dec(input.qty);
   if (!qty.gt(0)) throw new AppError("validation_error", "qty must be > 0");
-  // ponytail: one company-wide default TTL (settings); per-channel TTLs come with channels in Part 5.
-  const ttl = input.ttlSeconds ?? (await readSettings(tx, ctx.companyId)).reservationTtlSeconds;
+  const channel = ctx.salesChannel ?? input.channel; // none: company default TTL, order filed under pos
+  const settings = await readSettings(tx, ctx.companyId);
+  const ttl = input.ttlSeconds ?? (channel && settings.channelTtlSeconds[channel]) ?? settings.reservationTtlSeconds; // SO-08
   if (ttl < 60 || ttl > MAX_TTL_SECONDS) throw new AppError("validation_error", "ttlSeconds out of range");
 
   const [variant, warehouse] = await Promise.all([
@@ -46,7 +49,7 @@ export async function reserve(
   // Candidate positions, FEFO (expiry ASC, then batch_no); expired batches are unreservable (B-04).
   let candidates: (string | null)[] = [null];
   if (variant.product.requiresBatch) {
-    const today = new Date(new Date().toISOString().slice(0, 10));
+    const today = utcToday();
     const batches = await tx.batch.findMany({
       where: {
         companyId: ctx.companyId, variantId: variant.id,
@@ -87,11 +90,12 @@ export async function reserve(
     left = left.minus(n);
   }
 
+  const order = input.externalOrderId ? await orderRef(tx, ctx, channel ?? "pos", input.externalOrderId) : null;
   const reservation = await tx.reservation.create({
     data: {
       companyId: ctx.companyId, variantId: variant.id, warehouseId: warehouse.id,
-      qty: take.toFixed(4), expiresAt: new Date(Date.now() + ttl * 1000),
-      orderRef: input.orderRef ?? null, createdBy: ctx.userId,
+      qty: take.toFixed(4), expiresAt: new Date(Date.now() + ttl * 1000), ttlSeconds: ttl,
+      salesOrderRefId: order?.id ?? null, createdBy: ctx.userId,
       lines: { create: lines.map((l) => ({ batchId: l.batchId, qty: l.qty.toFixed(4) })) },
     },
     include: { lines: true },
@@ -116,6 +120,75 @@ export async function reserve(
 }
 
 const Dec_min = (a: Dec, b: Dec) => (a.lt(b) ? a : b);
+
+// SO-07: one row per (company, channel, external order id); concurrent first reserves race safely.
+async function orderRef(tx: Tx, ctx: Ctx, channel: SalesChannel, externalOrderId: string) {
+  await tx.salesOrderRef.createMany({
+    data: [{ companyId: ctx.companyId, channel, externalOrderId, createdBy: ctx.userId }], skipDuplicates: true,
+  });
+  return tx.salesOrderRef.findUniqueOrThrow({
+    where: { companyId_channel_externalOrderId: { companyId: ctx.companyId, channel, externalOrderId } },
+  });
+}
+
+// SO-09: POS immediate sale — reserve + fulfil the whole qty in one transaction.
+export async function posSale(tx: Tx, ctx: Ctx, input: Omit<ReserveInput, "allowPartial" | "ttlSeconds">) {
+  await requirePermission(ctx, "sales.fulfil", { warehouseId: input.warehouseId });
+  const r = await reserve(tx, ctx, { ...input, allowPartial: false });
+  const f = await fulfil(tx, ctx, { reservationId: r.reservation.id, version: r.reservation.version });
+  return { reservation: f.reservation, movementIds: [...r.movementIds, ...f.movementIds], balances: f.balances, auditId: f.auditId };
+}
+
+// SO-08: one extension, to now + the reservation's TTL (never shortens).
+export async function extend(tx: Tx, ctx: Ctx, input: { reservationId: string; version: number }) {
+  const r = await lockReservation(tx, ctx, input.reservationId, input.version, "sales.reserve");
+  const now = new Date();
+  if (r.expiresAt <= now) throw new AppError("reservation_expired", "Reservation has expired", { id: r.id });
+  if (r.extendedAt) throw new AppError("invalid_transition", "Reservation was already extended once", { id: r.id });
+  const reservation = await tx.reservation.update({
+    where: { id: r.id },
+    data: {
+      expiresAt: new Date(Math.max(r.expiresAt.getTime(), now.getTime() + r.ttlSeconds * 1000)),
+      extendedAt: now, version: { increment: 1 },
+    },
+    include: { lines: true },
+  });
+  const audit = await writeAudit(tx, ctx, {
+    action: "extend", entityType: "reservation", entityId: r.id, warehouseId: r.warehouseId,
+    before: { expiresAt: r.expiresAt, version: r.version }, after: { expiresAt: reservation.expiresAt, version: reservation.version },
+  });
+  return { reservation, auditId: audit.id };
+}
+
+// SO-07: cancel every open reservation of an order (e.g. reason `payment_failed`).
+export async function cancelOrder(tx: Tx, ctx: Ctx, input: { orderId: string; reason?: string }) {
+  const order = await tx.salesOrderRef.findFirst({ where: { id: input.orderId, companyId: ctx.companyId } });
+  if (!order) throw new AppError("not_found", "Order not found");
+  const open = await tx.reservation.findMany({
+    where: { salesOrderRefId: order.id, status: { in: ["active", "partially_fulfilled"] } },
+    orderBy: { id: "asc" }, select: { id: true },
+  });
+  const done = [];
+  for (const { id } of open) {
+    const r = await lockOpen(tx, ctx, id, "sales.cancel");
+    if (r) done.push(await releaseOpen(tx, ctx, r, undefined, "cancel", input.reason ?? "cancel"));
+  }
+  if (done.length === 0) throw new AppError("invalid_transition", "Order has no open reservations", { id: order.id });
+  return {
+    order, reservations: done.map((d) => d.reservation),
+    movementIds: done.flatMap((d) => d.movementIds), balances: done.flatMap((d) => d.balances),
+  };
+}
+
+// lockReservation for jobs/bulk paths: null when the reservation is no longer open.
+async function lockOpen(tx: Tx, ctx: Ctx, id: string, permission: string) {
+  try {
+    return await lockReservation(tx, ctx, id, undefined, permission);
+  } catch (e) {
+    if (e instanceof AppError && (e.code === "invalid_transition" || e.code === "reservation_expired")) return null;
+    throw e;
+  }
+}
 
 // Locks the reservation row (first in the lock order) and checks state + version.
 async function lockReservation(tx: Tx, ctx: Ctx, id: string, version: number | undefined, permission: string) {
@@ -150,7 +223,13 @@ export async function fulfil(
   if (!qty.gt(0) || qty.gt(open)) throw new AppError("validation_error", "qty must be > 0 and ≤ the open quantity", { open: open.toString() });
 
   // Lines are already FEFO-ordered by batch expiry at reserve time; keep that order.
-  const lines = await fefoLines(tx, r.lines);
+  // SO-10: lines on an expired batch are never picked (the nightly sweep releases them).
+  const today = utcToday();
+  const lines = (await fefoLines(tx, r.lines)).filter((l) => !l.expiry || l.expiry > today);
+  const live = lines.reduce((s, l) => s.plus(remaining(l)), dec(0));
+  if (qty.gt(live)) {
+    throw new AppError("reservation_expired", "Part of this reservation is on an expired batch", { id: r.id, fulfillable: live.toString() });
+  }
   await lockPositions(tx, ctx, lines.map((l) => [r.variantId, r.warehouseId, l.batchId] as const));
 
   const legs: Leg[] = [];
@@ -215,27 +294,34 @@ export async function cancel(
   return releaseOpen(tx, ctx, r, undefined, "cancel", input.reason ?? "cancel");
 }
 
-// Called by the TTL job (Part 5) with the system ctx. `asOf` = the job's sweep time.
+// Called by the TTL job with the system ctx. `asOf` = the job's sweep time.
 // Returns null when the reservation is not due or no longer open (fulfil won).
 export async function expireReservation(tx: Tx, ctx: Ctx, input: { reservationId: string; asOf?: Date }) {
-  let r: WithLines;
-  try {
-    r = await lockReservation(tx, ctx, input.reservationId, undefined, "sales.cancel");
-  } catch (e) {
-    if (e instanceof AppError && (e.code === "invalid_transition" || e.code === "reservation_expired")) return null;
-    throw e;
-  }
-  if (r.expiresAt > (input.asOf ?? new Date())) return null;
+  const r = await lockOpen(tx, ctx, input.reservationId, "sales.cancel");
+  if (!r || r.expiresAt > (input.asOf ?? new Date())) return null;
   return releaseOpen(tx, ctx, r, undefined, "expire", "expired");
 }
 
-async function releaseOpen(tx: Tx, ctx: Ctx, r: WithLines, qty: Dec | undefined, action: "release" | "cancel" | "expire", reason: string) {
+// B-05 step 1 / SO-10: release only the open lines pinned to an expired batch.
+// Null when nothing on that batch is still open (re-run safe).
+export async function expireBatchLines(tx: Tx, ctx: Ctx, input: { reservationId: string; batchId: string }) {
+  const r = await lockOpen(tx, ctx, input.reservationId, "sales.cancel");
+  if (!r) return null;
+  const open = r.lines.filter((l) => l.batchId === input.batchId).reduce((s, l) => s.plus(remaining(l)), dec(0));
+  if (!open.gt(0)) return null;
+  return releaseOpen(tx, ctx, r, open, "batch_expire", "batch_expired", input.batchId);
+}
+
+async function releaseOpen(
+  tx: Tx, ctx: Ctx, r: WithLines, qty: Dec | undefined,
+  action: "release" | "cancel" | "expire" | "batch_expire", reason: string, onlyBatchId?: string,
+) {
   const open = remaining(r);
   const want = qty ?? open;
   if (!want.gt(0) || want.gt(open)) throw new AppError("validation_error", "qty must be > 0 and ≤ the open quantity", { open: open.toString() });
 
   // Release latest-expiry lines first, so the FEFO-earliest pins stay reserved.
-  const lines = (await fefoLines(tx, r.lines)).reverse();
+  const lines = (await fefoLines(tx, r.lines)).reverse().filter((l) => onlyBatchId === undefined || l.batchId === onlyBatchId);
   const legs: Leg[] = [];
   let left = want;
   for (const line of lines) {
@@ -264,6 +350,7 @@ async function finish(
     action === "expire" ? "expired"
     : action === "cancel" ? "cancelled"
     : open.gt(0) ? (qtyFulfilled.gt(0) ? "partially_fulfilled" : "active")
+    : action === "batch_expire" ? "expired"
     : qtyFulfilled.gt(0) ? "fulfilled" : "cancelled";
   const reservation = await tx.reservation.update({
     where: { id: r.id },
@@ -277,15 +364,15 @@ async function finish(
   return { reservation, ...ledger(movements), auditId: audit.id };
 }
 
-// Lines ordered by batch expiry ASC (nulls last), then batch_no — FEFO (B-03).
+// Lines ordered by batch expiry ASC (nulls last), then batch_no — FEFO (B-03) — with the batch expiry.
 async function fefoLines(tx: Tx, lines: ReservationLine[]) {
   const ids = lines.map((l) => l.batchId).filter((b): b is string => !!b);
-  if (ids.length === 0) return lines;
+  if (ids.length === 0) return lines.map((l) => ({ ...l, expiry: null }));
   const batches = new Map((await tx.batch.findMany({ where: { id: { in: ids } } })).map((b) => [b.id, b]));
   const k = (l: ReservationLine) => batches.get(l.batchId!)!;
   return [...lines].sort((a, b) =>
     (k(a).expiryDate?.getTime() ?? Infinity) - (k(b).expiryDate?.getTime() ?? Infinity) ||
-    k(a).batchNo.localeCompare(k(b).batchNo));
+    k(a).batchNo.localeCompare(k(b).batchNo)).map((l) => ({ ...l, expiry: k(l).expiryDate }));
 }
 
 // Mutating responses carry movement ids + resulting balances (doc 24).

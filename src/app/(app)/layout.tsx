@@ -10,6 +10,7 @@ const NAV = [
   { href: "/products", label: "Products", grant: "products.view" },
   { href: "/suppliers", label: "Suppliers", grant: "suppliers.view" },
   { href: "/purchase-orders", label: "Purchasing", grant: ["purchases.view", "inventory.receive"] },
+  { href: "/sales-orders", label: "Sales", grant: "sales.view" },
   { href: "/warehouses", label: "Warehouses", grant: "warehouses.view" },
   { href: "/admin/users", label: "Users", grant: "users.view" },
   { href: "/admin/roles", label: "Roles", grant: "roles.manage" },

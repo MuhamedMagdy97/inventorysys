@@ -10,6 +10,8 @@ export const SettingsSchema = z.object({
   currency: z.string().regex(/^[A-Z]{3}$/, "ISO 4217 code, e.g. USD"),
   timezone: z.string().refine((tz) => Intl.supportedValuesOf("timeZone").includes(tz) || tz === "UTC", "Unknown time zone"),
   reservationTtlSeconds: z.number().int().min(60).max(30 * 24 * 3600),
+  // SO-08: per-channel hold; a channel without an entry uses reservationTtlSeconds.
+  channelTtlSeconds: z.partialRecord(z.enum(["pos", "web", "marketplace", "api"]), z.number().int().min(60).max(30 * 24 * 3600)),
   receiptTolerancePct: z.number().min(0).max(100),
   barcodeAliasDays: z.number().int().min(0).max(365), // P-CAT-02
 });
@@ -18,6 +20,7 @@ export type Settings = z.infer<typeof SettingsSchema>;
 const DEFAULTS: Omit<Settings, "currency"> = {
   timezone: "UTC",
   reservationTtlSeconds: 48 * 3600,
+  channelTtlSeconds: { pos: 15 * 60 },
   receiptTolerancePct: 0,
   barcodeAliasDays: 30,
 };

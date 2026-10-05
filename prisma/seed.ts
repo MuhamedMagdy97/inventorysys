@@ -8,6 +8,7 @@ import { seedRoles } from "@/server/users/roles";
 //   buyer@demo.local       purchasing_staff — drafts and submits POs
 //   purchasing@demo.local  purchasing_manager — approves (≤ 5000) and orders POs
 //   receiver@demo.local    warehouse_staff, main warehouse — posts receipts
+//   seller@demo.local      sales_staff, main warehouse — reserves, ships, POS sales
 // Password for all: SEED_PASSWORD (see .env.example).
 const NAME = "Demo Company";
 
@@ -28,6 +29,7 @@ async function main() {
       ["buyer@demo.local", "Buyer", "purchasing_staff", []],
       ["purchasing@demo.local", "Purchasing Manager", "purchasing_manager", []],
       ["receiver@demo.local", "Receiver", "warehouse_staff", [main.id]],
+      ["seller@demo.local", "Seller", "sales_staff", [main.id]],
     ] as const) {
       const existing = await tx.user.findUnique({ where: { email } });
       if (!existing) await createLoginUser(tx, company.id, { name, email, password, roleId: role(code), warehouseIds: [...warehouseIds] });
@@ -36,7 +38,7 @@ async function main() {
       }
     }
   });
-  console.log(`Seeded ${NAME} (${company.id}) — log in as manager@, buyer@, purchasing@, receiver@ or admin@demo.local`);
+  console.log(`Seeded ${NAME} (${company.id}) — log in as manager@, buyer@, purchasing@, receiver@, seller@ or admin@demo.local`);
 }
 
 main().finally(() => db.$disconnect());
