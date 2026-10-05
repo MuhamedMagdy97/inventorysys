@@ -1,4 +1,5 @@
 import { hashPassword } from "better-auth/crypto";
+import type { SalesChannel } from "@/generated/prisma/client";
 import { auth } from "@/server/auth/auth";
 import { writeAudit } from "@/server/core/audit";
 import { deny, requirePermission, type Ctx } from "@/server/core/ctx";
@@ -27,7 +28,7 @@ type Access = { roleIds: string[]; warehouseIds: string[] };
 export async function createUser(
   tx: Tx,
   ctx: Ctx,
-  input: Access & { name: string; email: string; password?: string; isService?: boolean },
+  input: Access & { name: string; email: string; password?: string; isService?: boolean; salesChannel?: SalesChannel },
 ) {
   await requirePermission(ctx, "users.manage");
   const email = input.email.trim().toLowerCase();
@@ -38,7 +39,10 @@ export async function createUser(
   await checkAccess(tx, ctx, input, "new");
 
   const user = await tx.user.create({
-    data: { companyId: ctx.companyId, name: input.name, email, isService: input.isService ?? false },
+    data: {
+      companyId: ctx.companyId, name: input.name, email, isService: input.isService ?? false,
+      salesChannel: input.isService ? (input.salesChannel ?? "api") : null,
+    },
   });
   if (!input.isService) {
     await tx.account.create({

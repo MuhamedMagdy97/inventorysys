@@ -1,4 +1,4 @@
-import type { Prisma } from "@/generated/prisma/client";
+import type { Prisma, SalesChannel } from "@/generated/prisma/client";
 import { db } from "@/server/db";
 import { writeAudit } from "./audit";
 import { AppError } from "./errors";
@@ -15,6 +15,7 @@ export type Ctx = {
   limits?: ReadonlyMap<string, Prisma.Decimal | null>;
   requestId: string;
   channel?: "web" | "api" | "mobile" | "scan" | "system";
+  salesChannel?: SalesChannel; // API-key requests: the service user's channel (SO-06)
 };
 
 // The auth guard every domain function calls itself (T2.3): permission (any of) +

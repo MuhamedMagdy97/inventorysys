@@ -74,13 +74,15 @@ Spec: 09, 10, 14 §3 (serial capture), 23 (PO), flows 6–8, edge #1, 9, 21, 22,
 - Gate: full/partial/over/under/wrong/damaged/duplicate-retry/close + reversal, UOM, batch, serial, SoD, archive guards → `src/server/purchasing/purchasing.test.ts`, `src/app/api/purchasing.test.ts`.
 - Deferred: inspection decision (`blocked_release`/`blocked_reject` for RC-05 units) with the Part 7 inspection screen; invoice-price variance + `cost_correction`; serialized reserve/fulfil/transfer (Parts 5–6 — posting refuses serialized stock outside receipts until then).
 
-## Part 5 — Sales channel API + background worker → **sellable alpha**
-Spec: 12, 14 §5, 17 (partial), edge #18, 29, 32, 34.
-- T5.1 Install pg-boss; `src/worker/index.ts` process; `npm run worker`.
-- T5.2 Jobs: reservation TTL expiry, nightly batch-expiry sweep (B-05 ordering), nightly reconciler with drift alert.
-- T5.3 Sales order refs, channel API keys, POS immediate-sale (reserve+fulfil in one transaction), reservation extension (max 1).
-- T5.4 UI: sales orders/reservations page with ATP inline.
-- Gate: buy → receive → reserve → fulfil E2E through the HTTP API; expiry-vs-fulfil race; the worker can be killed mid-job and safely re-run.
+## Part 5 — Sales channel API + background worker → **sellable alpha** — tasks ✅ 2026-10-05; tag `part-5` after CI is green
+Spec: 12, 14 §5, 17 (partial), edge #18, 29, 32, 34. Build decisions: 12 §5 (SO-06…11).
+- [x] T5.1 pg-boss 12.36.0; `src/worker/index.ts` (stately queues, UTC crons, graceful stop); `npm run worker`.
+- [x] T5.2 Jobs in `src/server/inventory/jobs.ts`: reservation TTL expiry (every minute), batch-expiry sweep (B-05 ordering, 00:15 UTC), reconciler with drift → audit `reconcile.drift` + notification (01:45 UTC). One transaction per item; re-runnable. `notification` table (stored only).
+- [x] T5.3 `sales_order_ref` (per channel + external id; derived status, order cancel), channel bound to the service user behind each API key, per-channel TTL setting, POS immediate sale, one extension per reservation; fulfil skips expired-batch lines.
+- [x] T5.4 UI: `/sales-orders` — ATP check, reserve / sell-now form, reservations with ship/cancel/extend and ATP inline, order view + cancel; channel picker for service users; per-channel holds in settings.
+- [x] API: `POST|GET /api/reservations`, `/api/reservations/:id/{fulfil|release|cancel|extend}`, `POST /api/pos-sales`, `GET /api/sales-orders/:id`, `POST /api/sales-orders/:id/cancel`.
+- Gate: buy → receive → reserve → fulfil E2E through HTTP (`src/app/api/sales.test.ts`); expiry-vs-fulfil race, killed-mid-job re-run, B-05 sweep, reconciler drift (`src/server/inventory/jobs.test.ts`).
+- Deferred: serialized reserve/fulfil + expiry sweep vs open transfers (edge #34) → Part 6; notification center/email → Part 9; multi-line atomic order reserve.
 
 ## Part 6 — Transfers, adjustments, damage/repair/disposal, approvals inbox (closes P6 gate, minus counts)
 Spec: 11, 07 I-07, 23, 25 (Approvals Inbox), flows 9–12, 17, 27, 28, edge #10, 11, 23, 25, 31, 33.

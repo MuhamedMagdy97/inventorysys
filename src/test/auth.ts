@@ -1,3 +1,4 @@
+import type { SalesChannel } from "@/generated/prisma/client";
 import { auth } from "@/server/auth/auth";
 import { transaction } from "@/server/db";
 import { createLoginUser } from "@/server/seed";
@@ -6,10 +7,10 @@ type Company = { company: { id: string }; roles: { id: string; code: string }[] 
 const roleId = (w: Company, code: string) => w.roles.find((r) => r.code === code)!.id;
 
 // A sales-channel service user with an API key → headers for requests (real auth path).
-export async function apiKeyHeaders(w: Company, roleCode: string, warehouseIds: string[] = []) {
+export async function apiKeyHeaders(w: Company, roleCode: string, warehouseIds: string[] = [], channel: SalesChannel = "api") {
   const user = await transaction(async (tx) => {
     const u = await tx.user.create({
-      data: { companyId: w.company.id, name: `svc-${roleCode}`, email: `svc+${crypto.randomUUID()}@test.invalid`, isService: true },
+      data: { companyId: w.company.id, name: `svc-${roleCode}`, email: `svc+${crypto.randomUUID()}@test.invalid`, isService: true, salesChannel: channel },
     });
     await tx.userRole.create({ data: { companyId: w.company.id, userId: u.id, roleId: roleId(w, roleCode) } });
     for (const warehouseId of warehouseIds) await tx.userWarehouse.create({ data: { companyId: w.company.id, userId: u.id, warehouseId } });

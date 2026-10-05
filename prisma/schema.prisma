@@ -44,27 +44,30 @@ model Company {
   brands             Brand[]
   uoms               Uom[]
   suppliers          Supplier[]
+  salesOrderRefs     SalesOrderRef[]
+  notifications      Notification[]
 
   @@map("company")
 }
 
 // Better Auth reads/writes this model: field names are its contract, columns are ours.
 model User {
-  id               String     @id @default(uuid(7))
-  companyId        String     @map("company_id")
+  id               String        @id @default(uuid(7))
+  companyId        String        @map("company_id")
   name             String
-  email            String     @unique
-  emailVerified    Boolean    @default(false) @map("email_verified")
+  email            String        @unique
+  emailVerified    Boolean       @default(false) @map("email_verified")
   image            String?
-  twoFactorEnabled Boolean?   @default(false) @map("two_factor_enabled")
-  status           UserStatus @default(active)
-  isSystem         Boolean    @default(false) @map("is_system") // jobs actor, cannot log in
-  isService        Boolean    @default(false) @map("is_service") // sales-channel API-key holder, cannot log in
-  failedLoginCount Int        @default(0) @map("failed_login_count")
-  lockedUntil      DateTime?  @map("locked_until")
-  version          Int        @default(0)
-  createdAt        DateTime   @default(now()) @map("created_at")
-  updatedAt        DateTime   @default(now()) @updatedAt @map("updated_at")
+  twoFactorEnabled Boolean?      @default(false) @map("two_factor_enabled")
+  status           UserStatus    @default(active)
+  isSystem         Boolean       @default(false) @map("is_system") // jobs actor, cannot log in
+  isService        Boolean       @default(false) @map("is_service") // sales-channel API-key holder, cannot log in
+  salesChannel     SalesChannel? @map("sales_channel") // service users: the channel their keys act as (SO-06)
+  failedLoginCount Int           @default(0) @map("failed_login_count")
+  lockedUntil      DateTime?     @map("locked_until")
+  version          Int           @default(0)
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @default(now()) @updatedAt @map("updated_at")
 
   company           Company         @relation(fields: [companyId], references: [id])
   sessions          Session[]
@@ -488,27 +491,31 @@ enum ReservationStatus {
 }
 
 model Reservation {
-  id           String            @id @default(uuid(7))
-  companyId    String            @map("company_id")
-  variantId    String            @map("variant_id")
-  warehouseId  String            @map("warehouse_id")
-  qty          Decimal           @db.Decimal(18, 4)
-  qtyFulfilled Decimal           @default(0) @map("qty_fulfilled") @db.Decimal(18, 4)
-  qtyReleased  Decimal           @default(0) @map("qty_released") @db.Decimal(18, 4)
-  status       ReservationStatus @default(active)
-  expiresAt    DateTime          @map("expires_at")
-  orderRef     String?           @map("order_ref")
-  version      Int               @default(0)
-  createdBy    String            @map("created_by")
-  createdAt    DateTime          @default(now()) @map("created_at")
-  updatedAt    DateTime          @default(now()) @updatedAt @map("updated_at")
+  id              String            @id @default(uuid(7))
+  companyId       String            @map("company_id")
+  variantId       String            @map("variant_id")
+  warehouseId     String            @map("warehouse_id")
+  qty             Decimal           @db.Decimal(18, 4)
+  qtyFulfilled    Decimal           @default(0) @map("qty_fulfilled") @db.Decimal(18, 4)
+  qtyReleased     Decimal           @default(0) @map("qty_released") @db.Decimal(18, 4)
+  status          ReservationStatus @default(active)
+  expiresAt       DateTime          @map("expires_at")
+  salesOrderRefId String?           @map("sales_order_ref_id")
+  ttlSeconds      Int               @map("ttl_seconds") // TTL applied at reserve; the extension reuses it (SO-08)
+  extendedAt      DateTime?         @map("extended_at") // max 1 extension
+  version         Int               @default(0)
+  createdBy       String            @map("created_by")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @default(now()) @updatedAt @map("updated_at")
 
   company   Company           @relation(fields: [companyId], references: [id])
   variant   ProductVariant    @relation(fields: [variantId], references: [id])
   warehouse Warehouse         @relation(fields: [warehouseId], references: [id])
+  order     SalesOrderRef?    @relation(fields: [companyId, salesOrderRefId], references: [companyId, id])
   lines     ReservationLine[]
 
   @@index([companyId, status, expiresAt])
+  @@index([salesOrderRefId])
   @@map("reservation")
 }
 
@@ -1180,4 +1187,54 @@ model SerialUnit {
 
   @@index([variantId, warehouseId, status])
   @@map("serial_unit")
+}
+
+// ───────────────────────── Part 5: sales channels (doc 12) ─────────────────────────
+
+enum SalesChannel {
+  pos
+  web
+  marketplace
+  api
+
+  @@map("sales_channel")
+}
+
+// External order identity (SO-07). Status is derived from its reservations.
+model SalesOrderRef {
+  id              String       @id @default(uuid(7))
+  companyId       String       @map("company_id")
+  channel         SalesChannel
+  externalOrderId String       @map("external_order_id")
+  createdBy       String       @map("created_by")
+  createdAt       DateTime     @default(now()) @map("created_at")
+
+  company      Company       @relation(fields: [companyId], references: [id])
+  reservations Reservation[]
+
+  @@unique([companyId, id])
+  @@unique([companyId, channel, externalOrderId])
+  @@map("sales_order_ref")
+}
+
+// Doc 17, stored only (N-03); notification center + email in Part 9. user_id null =
+// everyone with access to warehouse_id (company-wide when that is null too).
+model Notification {
+  id          String    @id @default(uuid(7))
+  companyId   String    @map("company_id")
+  userId      String?   @map("user_id")
+  warehouseId String?   @map("warehouse_id")
+  type        String
+  entityType  String    @map("entity_type")
+  entityId    String    @map("entity_id")
+  message     String
+  link        String?
+  actorId     String    @map("actor_id")
+  readAt      DateTime? @map("read_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, userId, readAt])
+  @@map("notification")
 }

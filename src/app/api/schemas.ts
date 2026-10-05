@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { zId } from "@/server/core/api";
+import { zId, zQty } from "@/server/core/api";
 
 // Request bodies for the Part 3 master-data routes (catalog, suppliers, warehouses).
 // Domain functions re-validate business rules; these only shape the input.
@@ -96,3 +96,16 @@ export const ReceiptCreate = z.object({
 });
 export const ReceiptReverse = z.object({ reason: text(2000) });
 export const ExcessDecision = z.object({ approve: z.boolean(), comment: text(2000).nullable().optional() });
+
+// ───────────── Part 5: sales channels ─────────────
+export const ReserveBody = z.object({
+  variantId: zId,
+  warehouseId: zId,
+  qty: zQty,
+  batchId: zId.optional(),
+  allowPartial: z.boolean().optional(),
+  allowSubstitution: z.boolean().optional(),
+  ttlSeconds: z.number().int().positive().optional(),
+  externalOrderId: z.string().trim().min(1).max(100).optional(),
+  channel: z.enum(["pos", "web", "marketplace", "api"]).optional(), // staff only; API keys act as their own channel (SO-06)
+});

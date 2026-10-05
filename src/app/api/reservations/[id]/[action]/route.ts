@@ -3,16 +3,16 @@ import { idempotencyKey, parseBody, withApi, zId, zQty } from "@/server/core/api
 import { AppError } from "@/server/core/errors";
 import { execute } from "@/server/core/execute";
 import { requestCtx } from "@/server/auth/session-ctx";
-import { cancel, fulfil, release } from "@/server/inventory/reservations";
+import { cancel, extend, fulfil, release } from "@/server/inventory/reservations";
 
 const Body = z.object({
   version: z.number().int().min(0),
   qty: zQty.optional(), // fulfil/release: defaults to the whole open quantity
   reason: z.string().max(200).optional(),
 });
-const actions = { fulfil, release, cancel } as const;
+const actions = { fulfil, release, cancel, extend } as const;
 
-// POST /api/reservations/:id/{fulfil|release|cancel} — version-checked (INV-023), idempotent (INV-017).
+// POST /api/reservations/:id/{fulfil|release|cancel|extend} — version-checked (INV-023), idempotent (INV-017).
 export const POST = withApi<{ id: string; action: string }>(async (req, { params, requestId }) => {
   const ctx = await requestCtx(req, requestId);
   if (!Object.hasOwn(actions, params.action)) throw new AppError("not_found", "Unknown reservation action");

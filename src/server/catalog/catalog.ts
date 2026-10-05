@@ -550,3 +550,12 @@ export async function createBatch(
   await writeAudit(tx, ctx, { action: "create", entityType: "batch", entityId: batch.id, after: batch });
   return batch;
 }
+
+// Typed or scanned code → exactly one variant id (never auto-pick on ambiguity, P-CAT-02).
+export async function variantByCode(ctx: Ctx, code: string) {
+  const [hit] = await lookupCodes(ctx, [code]);
+  if (!hit || hit.result !== "found") {
+    throw new AppError("validation_error", hit?.result === "ambiguous" ? `${code} matches ${hit.matches.map((m) => m.sku).join(", ")}; enter the exact SKU` : `${code}: SKU not found`);
+  }
+  return hit.matches[0].variantId;
+}

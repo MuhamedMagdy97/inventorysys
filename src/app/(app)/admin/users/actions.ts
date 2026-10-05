@@ -13,8 +13,10 @@ export async function createUserAction(_: ActionState, form: FormData): Promise<
     email: z.email(),
     password: z.string().max(200).optional(),
     isService: z.boolean(),
+    salesChannel: z.enum(["pos", "web", "marketplace", "api"]).optional(),
   }).safeParse({
     name: form.get("name"), email: form.get("email"), password: form.get("password") || undefined, isService: form.get("isService") === "on",
+    salesChannel: form.get("salesChannel") || undefined,
   });
   if (!input.success) return { error: "Check name, email and password" };
   return runAction("users.create", (tx, ctx) =>

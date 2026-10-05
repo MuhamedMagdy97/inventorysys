@@ -14,7 +14,7 @@ Decided 2026-10-04. Binding for the build. Spec docs (00–31) still win on *beh
 | Tests | Vitest against a **real** Postgres test DB (`inventory_test`) | 5 |
 | UI | Tailwind 4 (+ shadcn/ui components when UI work starts) | — |
 | Auth | Better Auth (Prisma adapter, sessions, TOTP 2FA, `@better-auth/api-key` for sales channels) | 1.7.7 (exact pin) |
-| Jobs (Part 5) | pg-boss — Postgres-backed queue, separate `worker` process, no Redis | add in Part 5 |
+| Jobs (Part 5) | pg-boss — Postgres-backed queue, separate `worker` process, no Redis | 12.36.0 (exact pin) |
 | CI | GitHub Actions: lint → typecheck → test (Postgres service) → build | — |
 
 Add a dependency only in the Part that first needs it.

@@ -44,6 +44,7 @@ export async function buildCtx(
     limits,
     requestId: opts.requestId,
     channel: opts.channel,
+    salesChannel: user.salesChannel ?? undefined,
   };
 }
 

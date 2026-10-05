@@ -6,12 +6,16 @@ import { getSettings, updateSettings } from "@/server/settings/settings";
 
 export const metadata: Metadata = { title: "Settings" };
 
+const CHANNELS = ["pos", "web", "marketplace", "api"] as const;
+
 async function saveSettings(_: ActionState, form: FormData): Promise<ActionState> {
   "use server";
   return runAction("settings.update", (tx, ctx) => updateSettings(tx, ctx, {
     currency: String(form.get("currency") ?? "").toUpperCase(),
     timezone: String(form.get("timezone") ?? ""),
     reservationTtlSeconds: Math.round(Number(form.get("reservationTtlHours")) * 3600),
+    // Blank = the channel uses the default hold (SO-08).
+    channelTtlSeconds: Object.fromEntries(CHANNELS.filter((c) => form.get(`ttl.${c}`)).map((c) => [c, Math.round(Number(form.get(`ttl.${c}`)) * 60)])),
     receiptTolerancePct: Number(form.get("receiptTolerancePct")),
     barcodeAliasDays: Number(form.get("barcodeAliasDays")),
   }));
@@ -38,6 +42,12 @@ export default async function SettingsPage() {
               Default reservation hold (hours)
               <input name="reservationTtlHours" type="number" min={0.0167} max={720} step="any" defaultValue={s.reservationTtlSeconds / 3600} required className="input" />
             </label>
+            {CHANNELS.map((c) => (
+              <label key={c} className="label">
+                Hold for {c} channel (minutes, blank = default)
+                <input name={`ttl.${c}`} type="number" min={1} max={43200} step={1} defaultValue={s.channelTtlSeconds[c] ? s.channelTtlSeconds[c] / 60 : ""} className="input" />
+              </label>
+            ))}
             <label className="label">
               Receiving over-delivery tolerance (%)
               <input name="receiptTolerancePct" type="number" min={0} max={100} step="0.1" defaultValue={s.receiptTolerancePct} required className="input" />
