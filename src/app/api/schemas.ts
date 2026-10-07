@@ -114,13 +114,30 @@ export const TransferAction = z.object({
   })).max(500).optional(),
 });
 export const AdjustmentCreate = z.object({
-  kind: z.enum(["adjustment", "damage", "repair", "disposal"]), warehouseId: zId, reasonCode: text(50), note: text(2000).nullable().optional(),
+  kind: z.enum(["adjustment", "damage", "repair", "disposal", "opening"]), warehouseId: zId, reasonCode: text(50), note: text(2000).nullable().optional(),
+  asOf: z.coerce.date().nullable().optional(), // opening only (MV-04)
   lines: z.array(z.object({
     variantId: zId, qty: zSignedQty, batchId: zId.nullable().optional(), binId: zId.nullable().optional(),
+    batchNo: text(60).nullable().optional(), expiryDate: z.coerce.date().nullable().optional(), // opening
     bucket: z.enum(["damaged", "expired", "blocked"]).nullable().optional(), unitCost: zDec.nullable().optional(), serials: zSerials,
   })).min(1).max(500),
 });
 export const AdjustmentAction = z.object({ ...zVersion, comment: text(2000).nullable().optional() });
+
+// ───────────── Part 8: counts, imports ─────────────
+export const CountCreate = z.object({
+  warehouseId: zId, binId: zId.nullable().optional(), variantIds: z.array(zId).max(500).optional(), note: text(2000).nullable().optional(),
+});
+export const CountAction = z.object({
+  version: z.number().int().min(0).optional(), // required except for entries (concurrent counters)
+  comment: text(2000).nullable().optional(),
+  lineIds: z.array(zId).max(5000).optional(), // recount
+  entries: z.array(z.object({
+    lineId: zId.optional(), binId: zId.optional(), variantId: zId.optional(), batchId: zId.nullable().optional(),
+    countedQty: zQty0, serials: zSerials,
+  })).max(5000).optional(),
+});
+export const ImportConfirm = z.object({ ...zVersion, mode: z.enum(["all_or_nothing", "valid_only"]).optional() });
 
 // ───────────── Part 5: sales channels ─────────────
 export const ReserveBody = z.object({

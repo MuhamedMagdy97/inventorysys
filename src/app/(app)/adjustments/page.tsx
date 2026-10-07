@@ -8,7 +8,7 @@ import { listAdjustments } from "@/server/inventory/adjustments";
 export const metadata: Metadata = { title: "Adjustments" };
 
 const STATUSES: AdjustmentStatus[] = ["draft", "submitted", "approved", "applied", "cancelled"];
-const KINDS: AdjustmentKind[] = ["adjustment", "damage", "repair", "disposal"];
+const KINDS: AdjustmentKind[] = ["adjustment", "damage", "repair", "disposal", "opening"];
 
 export default async function AdjustmentsPage({ searchParams }: PageProps<"/adjustments">) {
   const sp = await searchParams;

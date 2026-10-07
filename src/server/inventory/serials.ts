@@ -37,6 +37,14 @@ export async function takeSerials(
   return units;
 }
 
+// S-01 for new units (opening balance, count found): unique in the list and among live units
+// (the partial unique index `serial_unit_live_key` is the backstop).
+export async function assertSerialsFree(tx: Tx, ctx: Ctx, serials: string[]) {
+  const taken = await tx.serialUnit.findMany({ where: { companyId: ctx.companyId, serialNo: { in: serials }, status: { not: "reversed" } }, select: { serialNo: true } });
+  const dupes = [...new Set([...taken.map((t) => t.serialNo), ...serials.filter((n, i, a) => a.indexOf(n) !== i)])];
+  if (dupes.length) throw new AppError("duplicate", `Serial number(s) already exist: ${dupes.join(", ")}`, { field: "serials", serials: dupes });
+}
+
 // Leg quantities per bin for a set of units.
 export function perBin(units: SerialUnit[]): { binId: string; qty: number }[] {
   const m = new Map<string, number>();

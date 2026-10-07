@@ -19,6 +19,7 @@ async function saveSettings(_: ActionState, form: FormData): Promise<ActionState
     receiptTolerancePct: Number(form.get("receiptTolerancePct")),
     barcodeAliasDays: Number(form.get("barcodeAliasDays")),
     approvalSlaHours: Number(form.get("approvalSlaHours")),
+    countRecountPct: Number(form.get("countRecountPct")),
   }));
 }
 
@@ -60,6 +61,10 @@ export default async function SettingsPage() {
             <label className="label">
               Approvals overdue after (hours)
               <input name="approvalSlaHours" type="number" min={1} max={720} step={1} defaultValue={s.approvalSlaHours} required className="input" />
+            </label>
+            <label className="label">
+              Count variance forcing a recount (%)
+              <input name="countRecountPct" type="number" min={0} max={100} step="0.1" defaultValue={s.countRecountPct} required className="input" />
             </label>
           </div>
           <p className="text-xs text-muted">Approval limits are set per role grant on the Roles page.</p>

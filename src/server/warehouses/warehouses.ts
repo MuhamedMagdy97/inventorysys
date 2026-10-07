@@ -3,6 +3,7 @@ import { writeAudit } from "@/server/core/audit";
 import { inScope, requirePermission, type Ctx } from "@/server/core/ctx";
 import { AppError, assertVersion } from "@/server/core/errors";
 import { db, type Tx } from "@/server/db";
+import { OPEN_COUNT } from "@/server/inventory/counts";
 import { OPEN_TRANSFER } from "@/server/inventory/transfers";
 
 // Doc 06. WH-01/WH-05: every warehouse gets a default sellable, receiving, quarantine and damaged bin.
@@ -99,18 +100,19 @@ export async function updateWarehouse(
   return after;
 }
 
-// WH-02 / edge #5. Open POs stand for expected receipts; open transfers either way incl. in-transit (edge #25). Part 8 adds counts.
+// WH-02 / edge #5. Open POs stand for expected receipts; open transfers either way incl. in-transit (edge #25); open counts.
 async function assertWarehouseEmpty(tx: Tx, warehouseId: string) {
-  const [stock, reserved, reservations, openPos, openTransfers] = await Promise.all([
+  const [stock, reserved, reservations, openPos, openTransfers, openCounts] = await Promise.all([
     tx.stockBalance.count({ where: { warehouseId, OR: [{ onHand: { gt: 0 } }, { blocked: { gt: 0 } }, { damaged: { gt: 0 } }, { expired: { gt: 0 } }] } }),
     tx.stockAllocation.count({ where: { warehouseId, qtyReserved: { gt: 0 } } }),
     tx.reservation.count({ where: { warehouseId, status: { in: ["active", "partially_fulfilled"] } } }),
     tx.purchaseOrder.count({ where: { warehouseId, status: { in: ["draft", "submitted", "approved", "ordered", "partially_received"] } } }),
     tx.transfer.count({ where: { OR: [{ fromWarehouseId: warehouseId }, { toWarehouseId: warehouseId }], status: { in: OPEN_TRANSFER } } }),
+    tx.stockCount.count({ where: { warehouseId, status: { in: OPEN_COUNT } } }),
   ]);
-  if (stock || reserved || reservations || openPos || openTransfers) {
-    throw new AppError("conflict", "Warehouse still holds stock, open reservations, POs or transfers; empty and close it first (WH-02)", {
-      reason: "not_empty", stockPositions: stock, reservedPositions: reserved, openReservations: reservations, openPos, openTransfers,
+  if (stock || reserved || reservations || openPos || openTransfers || openCounts) {
+    throw new AppError("conflict", "Warehouse still holds stock, open reservations, POs, transfers or counts; empty and close it first (WH-02)", {
+      reason: "not_empty", stockPositions: stock, reservedPositions: reserved, openReservations: reservations, openPos, openTransfers, openCounts,
     });
   }
 }
@@ -168,6 +170,8 @@ export async function updateBin(
       where: { binId: before.id, OR: [{ onHand: { gt: 0 } }, { blocked: { gt: 0 } }, { damaged: { gt: 0 } }, { expired: { gt: 0 } }] },
     });
     if (stocked) throw new AppError("conflict", "Bin still holds stock; move it first (WH-03)", { reason: "not_empty" });
+    const counting = await tx.stockCount.count({ where: { status: { in: OPEN_COUNT }, OR: [{ binId: before.id }, { lines: { some: { binId: before.id } } }] } });
+    if (counting) throw new AppError("conflict", "Bin is part of an open stock count; finish or cancel it first (WH-03)", { reason: "open_count" });
   }
 
   assertVersion(await tx.bin.updateMany({

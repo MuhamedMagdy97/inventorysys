@@ -31,6 +31,7 @@ export default async function AdjustmentPage({ params }: PageProps<"/adjustments
         <h1 className="h1 mt-1">{a.number}</h1>
         <p className="text-sm text-muted">
           {a.kind} · {a.status} · {a.warehouse.code} · reason {a.reasonCode} · created by {a.creator.name} · value ≈ {a.value.toFixed(2)}
+          {a.asOf && ` · as of ${at(a.asOf)}`}
           {a.note && ` · ${a.note}`}
         </p>
       </div>

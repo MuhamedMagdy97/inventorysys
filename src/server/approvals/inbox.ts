@@ -3,6 +3,7 @@ import { inScope, type Ctx } from "@/server/core/ctx";
 import { AppError } from "@/server/core/errors";
 import { db, type Tx } from "@/server/db";
 import { adjustmentValue, applyAdjustment, approveAdjustment, GRANTS, rejectAdjustment } from "@/server/inventory/adjustments";
+import { applyCount, approveCount, countValue, recountCount } from "@/server/inventory/counts";
 import { dec } from "@/server/inventory/post";
 import { approveTransfer, decideVariance, rejectTransfer } from "@/server/inventory/transfers";
 import { approvePo, rejectPo } from "@/server/purchasing/purchase-orders";
@@ -15,7 +16,7 @@ import { readSettings } from "@/server/settings/settings";
 // with a higher limit (INV-020). ponytail: escalation job + reminders arrive with Part 9.
 
 export type InboxItem = {
-  type: "purchase_order" | "receipt_excess" | "transfer" | "transfer_variance" | "stock_adjustment" | "adjustment_apply";
+  type: "purchase_order" | "receipt_excess" | "transfer" | "transfer_variance" | "stock_adjustment" | "adjustment_apply" | "stock_count" | "count_apply";
   id: string; // the document the decision acts on
   version: number | null;
   number: string;
@@ -117,6 +118,30 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
     }
   }
 
+  if (has("inventory.count_approve")) {
+    const counts = await db.stockCount.findMany({
+      where: { companyId: ctx.companyId, status: "variance_review", createdBy: me, NOT: { counters: { has: ctx.userId } } },
+      include: { warehouse: { select: { code: true } }, lines: true },
+    });
+    for (const c of scoped(counts, (c) => c.warehouseId)) {
+      const amount = (await countValue(db, c)).toFixed(2);
+      const off = c.lines.filter((l) => !dec(l.countedQty).eq(dec(l.systemQty))).length;
+      out.push({
+        type: "stock_count", id: c.id, version: c.version, number: c.number, summary: `Count at ${c.warehouse.code}: ${off} of ${c.lines.length} line(s) differ`,
+        amount, waitingSince: c.updatedAt, overLimit: !limitOk("inventory.count_approve", amount), link: `/counts/${c.id}`,
+      });
+    }
+  }
+  if (has("inventory.count_apply")) {
+    const ready = await db.stockCount.findMany({ where: { companyId: ctx.companyId, status: "approved" }, include: { warehouse: { select: { code: true } } } });
+    for (const c of scoped(ready, (c) => c.warehouseId)) {
+      out.push({
+        type: "count_apply", id: c.id, version: c.version, number: c.number, summary: `Approved count at ${c.warehouse.code} — apply variances`,
+        amount: null, waitingSince: c.approvedAt ?? c.updatedAt, overLimit: false, link: `/counts/${c.id}`,
+      });
+    }
+  }
+
   const { approvalSlaHours } = await readSettings(db, ctx.companyId);
   const items = out
     .map((i) => ({ ...i, ageHours: ago(i.waitingSince), overdue: ago(i.waitingSince) >= approvalSlaHours }))
@@ -147,5 +172,14 @@ export async function decide(
     case "adjustment_apply":
       if (!input.approve) throw new AppError("validation_error", "An approved adjustment is applied or cancelled on its page");
       return applyAdjustment(tx, ctx, { id: input.id, version: v });
+    case "stock_count": {
+      if (input.approve) return approveCount(tx, ctx, { id: input.id, version: v, comment });
+      // "Reject" a count = recount every line that differs.
+      const lines = await tx.stockCountLine.findMany({ where: { countId: input.id } });
+      return recountCount(tx, ctx, { id: input.id, version: v, lineIds: lines.filter((l) => !dec(l.countedQty).eq(dec(l.systemQty))).map((l) => l.id) });
+    }
+    case "count_apply":
+      if (!input.approve) throw new AppError("validation_error", "An approved count is applied or cancelled on its page");
+      return applyCount(tx, ctx, { id: input.id, version: v });
   }
 }

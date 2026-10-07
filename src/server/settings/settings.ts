@@ -15,6 +15,7 @@ export const SettingsSchema = z.object({
   receiptTolerancePct: z.number().min(0).max(100),
   barcodeAliasDays: z.number().int().min(0).max(365), // P-CAT-02
   approvalSlaHours: z.number().int().min(1).max(720), // N-04: inbox flags older approvals as overdue
+  countRecountPct: z.number().min(0).max(100), // doc 23: |variance| above this % of system qty forces a recount
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -25,6 +26,7 @@ const DEFAULTS: Omit<Settings, "currency"> = {
   receiptTolerancePct: 0,
   barcodeAliasDays: 30,
   approvalSlaHours: 48,
+  countRecountPct: 10,
 };
 
 // Internal read for domain code (no permission: callers already authorized their action).

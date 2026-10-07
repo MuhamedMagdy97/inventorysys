@@ -13,10 +13,12 @@ const NAV = [
   { href: "/sales-orders", label: "Sales", grant: "sales.view" },
   { href: "/transfers", label: "Transfers", grant: "inventory.view" },
   { href: "/adjustments", label: "Adjustments", grant: "inventory.view" },
-  { href: "/approvals", label: "Approvals", grant: ["purchases.approve", "inventory.transfer_approve", "inventory.adjust_approve", "inventory.adjust_apply", "inventory.damage_approve", "inventory.repair_approve", "inventory.dispose_approve"] },
+  { href: "/counts", label: "Counts", grant: "inventory.view" },
+  { href: "/approvals", label: "Approvals", grant: ["purchases.approve", "inventory.transfer_approve", "inventory.adjust_approve", "inventory.adjust_apply", "inventory.damage_approve", "inventory.repair_approve", "inventory.dispose_approve", "inventory.count_approve", "inventory.count_apply"] },
   { href: "/warehouses", label: "Warehouses", grant: "warehouses.view" },
   { href: "/admin/users", label: "Users", grant: "users.view" },
   { href: "/admin/roles", label: "Roles", grant: "roles.manage" },
+  { href: "/imports", label: "Import / export", grant: ["imports.run", "reports.export"] },
   { href: "/admin/audit", label: "Audit log", grant: "audit.view" },
   { href: "/admin/settings", label: "Settings", grant: "settings.manage" },
 ] as const;

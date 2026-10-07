@@ -7,8 +7,9 @@ import { nextNumber } from "@/server/core/sequences";
 import { stateMachine } from "@/server/core/state";
 import { db, type Tx } from "@/server/db";
 import { notify } from "@/server/notifications/notify";
+import { resolveBatch } from "@/server/purchasing/receipts";
 import { Dec, dec, lockPositions, pickBins, postMovements, type Bucket, type DecValue, type Leg } from "./post";
-import { perBin, takeSerials } from "./serials";
+import { assertSerialsFree, perBin, takeSerials } from "./serials";
 
 // Flow 12 (adjust), 17 (damage), 27 (repair), 28 (dispose); doc 23. One document type
 // with a kind: draft → submitted → approved (≠ creator, limit on value) → applied.
@@ -28,7 +29,10 @@ export const GRANTS: Record<AdjustmentKind, { create: string; submit: string; ap
   damage: { create: "inventory.damage_mark", submit: "inventory.damage_mark", approve: "inventory.damage_approve" },
   repair: { create: "inventory.damage_mark", submit: "inventory.damage_mark", approve: "inventory.repair_approve" },
   disposal: { create: "inventory.damage_mark", submit: "inventory.damage_mark", approve: "inventory.dispose_approve" },
+  opening: { create: "inventory.adjust_create", submit: "inventory.adjust_submit", approve: "inventory.adjust_approve" }, // flow 26
 };
+// Flow 26: an admin running imports (imports.run) may also create opening balances.
+const createGrant = (k: AdjustmentKind) => (k === "opening" ? [GRANTS.opening.create, "imports.run"] : GRANTS[k].create);
 
 type PhysicalBucket = Exclude<Bucket, "reserved" | "onHand">;
 export type AdjustmentLineInput = {
@@ -37,8 +41,10 @@ export type AdjustmentLineInput = {
   batchId?: string | null;
   binId?: string | null;
   bucket?: PhysicalBucket | null; // disposal: which bucket is written off
-  unitCost?: DecValue | null; // adjustment in; default current WAC
+  unitCost?: DecValue | null; // adjustment in (default current WAC); opening: required
   serials?: string[];
+  batchNo?: string | null; // opening: find or create the batch (B-01/B-02)
+  expiryDate?: Date | null;
 };
 
 const s4 = (d: Dec) => d.toFixed(4);
@@ -47,9 +53,13 @@ const ZERO = dec(0);
 export async function createAdjustment(
   tx: Tx,
   ctx: Ctx,
-  input: { kind: AdjustmentKind; warehouseId: string; reasonCode: string; note?: string | null; lines: AdjustmentLineInput[] },
+  input: { kind: AdjustmentKind; warehouseId: string; reasonCode: string; note?: string | null; asOf?: Date | null; lines: AdjustmentLineInput[] },
 ) {
-  await requirePermission(ctx, GRANTS[input.kind].create, { warehouseId: input.warehouseId });
+  await requirePermission(ctx, createGrant(input.kind), { warehouseId: input.warehouseId });
+  const opening = input.kind === "opening";
+  if (input.asOf && (!opening || input.asOf > new Date())) {
+    throw new AppError("validation_error", opening ? "Opening date can't be in the future" : "Only opening balances take an as-of date (MV-04)", { field: "asOf" });
+  }
   const wh = await tx.warehouse.findFirst({ where: { id: input.warehouseId, companyId: ctx.companyId } });
   if (!wh) throw new AppError("validation_error", "Unknown warehouse", { field: "warehouseId" });
   if (wh.status !== "active") throw new AppError("archived_conflict", `Warehouse is ${wh.status}`, { field: "warehouseId" });
@@ -58,11 +68,20 @@ export async function createAdjustment(
   if (!input.lines.length) throw new AppError("validation_error", "Add at least one line", { field: "lines" });
 
   const lines: Prisma.StockAdjustmentLineCreateManyAdjustmentInput[] = [];
-  for (const [i, l] of input.lines.entries()) {
+  const allSerials: string[] = [];
+  for (const [i, line] of input.lines.entries()) {
+    let l = line;
     const v = await tx.productVariant.findFirst({ where: { id: l.variantId, companyId: ctx.companyId }, include: { product: true } });
     if (!v) throw new AppError("validation_error", "Unknown variant", { field: "variantId" });
-    assertTransactable(v, "existing"); // INV-019: archived blocks; discontinued stock may still be corrected
+    assertTransactable(v, opening ? "new" : "existing"); // INV-019: archived blocks; discontinued stock may still be corrected
     const sku = v.sku;
+    if (opening && !l.batchId && (l.batchNo?.trim() || v.product.requiresBatch)) {
+      l = { ...l, batchId: (await resolveBatch(tx, ctx, v, { batchNo: l.batchNo ?? undefined, expiryDate: l.expiryDate ?? undefined }, null))?.id ?? null };
+    } else if (l.batchNo || l.expiryDate) {
+      throw new AppError("validation_error", "Only opening balances create batches; pick an existing batch", { field: "batchNo", sku });
+    }
+    if (opening && l.unitCost == null) throw new AppError("validation_error", `${sku}: opening stock needs a unit cost`, { field: "unitCost", sku });
+    if (opening) allSerials.push(...(l.serials ?? []).map((x) => x.trim()).filter(Boolean));
     const q = dec(l.qty);
     if (q.isZero() || q.decimalPlaces() > 4 || (input.kind !== "adjustment" && q.isNeg())) {
       throw new AppError("validation_error", `${sku}: quantity must be ${input.kind === "adjustment" ? "≠ 0" : "> 0"} (max 4 decimals)`, { field: "qty", sku });
@@ -83,25 +102,27 @@ export async function createAdjustment(
     if (l.binId) {
       const bin = await tx.bin.findFirst({ where: { id: l.binId, warehouseId: wh.id, archived: false } });
       if (!bin) throw new AppError("validation_error", "Bin not found in warehouse", { field: "binId", sku });
-      if (input.kind === "adjustment" && q.gt(0) && bin.type !== "sellable" && bin.type !== "receiving") {
+      if ((opening || (input.kind === "adjustment" && q.gt(0))) && bin.type !== "sellable" && bin.type !== "receiving") {
         throw new AppError("validation_error", "Found stock goes into a sellable or receiving bin", { field: "binId", sku });
       }
     }
     if ((input.kind === "disposal") !== !!l.bucket) {
       throw new AppError("validation_error", input.kind === "disposal" ? `${sku}: choose damaged, expired or blocked` : "Only disposals name a bucket", { field: "bucket", sku });
     }
-    if (l.unitCost != null && !(input.kind === "adjustment" && q.gt(0))) throw new AppError("validation_error", "Only found stock (adjustment in) takes a unit cost", { field: "unitCost", sku });
+    if (l.unitCost != null && !opening && !(input.kind === "adjustment" && q.gt(0))) throw new AppError("validation_error", "Only found stock (adjustment in) takes a unit cost", { field: "unitCost", sku });
     if (l.unitCost != null && (dec(l.unitCost).isNeg() || dec(l.unitCost).decimalPlaces() > 4)) throw new AppError("validation_error", "Unit cost: ≥ 0, max 4 decimals", { field: "unitCost", sku });
     lines.push({
       lineNo: i + 1, variantId: v.id, batchId: l.batchId ?? null, binId: l.binId ?? null, qty: s4(q),
       bucket: l.bucket ?? null, unitCost: l.unitCost == null ? null : s4(dec(l.unitCost)), serials: (l.serials ?? []).map((x) => x.trim()).filter(Boolean),
     });
   }
+  if (allSerials.length) await assertSerialsFree(tx, ctx, allSerials);
   const year = new Date().getUTCFullYear();
   const adj = await tx.stockAdjustment.create({
     data: {
       companyId: ctx.companyId, number: await nextNumber(tx, ctx.companyId, `adj:${year}`, `ADJ-${year}-`, 5),
       kind: input.kind, warehouseId: wh.id, reasonCode, note: input.note?.trim() || null, createdBy: ctx.userId,
+      asOf: opening ? (input.asOf ?? null) : null,
       lines: { createMany: { data: lines } },
     },
     include: { lines: { orderBy: { lineNo: "asc" } } },
@@ -152,7 +173,7 @@ export async function adjustmentValue(tx: Tx | typeof db, a: { warehouseId: stri
 
 export async function submitAdjustment(tx: Tx, ctx: Ctx, input: { id: string; version: number }) {
   const a = await lockAdjustment(tx, ctx, input.id, input.version);
-  await requirePermission(ctx, GRANTS[a.kind].submit, { warehouseId: a.warehouseId }); // INV-018
+  await requirePermission(ctx, a.kind === "opening" ? [GRANTS.opening.submit, "imports.run"] : GRANTS[a.kind].submit, { warehouseId: a.warehouseId }); // INV-018
   await move(tx, a, input.version, "submitted");
   return done(tx, ctx, a, "submit");
 }
@@ -204,32 +225,44 @@ export async function cancelAdjustment(tx: Tx, ctx: Ctx, input: { id: string; ve
 }
 
 // Serial state the unit must be in before / goes to after each kind (I-06).
-const SERIAL_FROM: Record<Exclude<AdjustmentKind, "adjustment">, (bucket: string | null) => SerialStatus[]> = {
+const SERIAL_FROM: Record<Exclude<AdjustmentKind, "adjustment" | "opening">, (bucket: string | null) => SerialStatus[]> = {
   damage: () => ["in_stock"],
   repair: () => ["damaged"],
   disposal: (b) => (b === "blocked" ? ["quarantine"] : ["damaged"]),
 };
-const SERIAL_TO: Record<Exclude<AdjustmentKind, "adjustment">, SerialStatus> = { damage: "damaged", repair: "in_stock", disposal: "disposed" };
+const SERIAL_TO: Record<Exclude<AdjustmentKind, "adjustment" | "opening">, SerialStatus> = { damage: "damaged", repair: "in_stock", disposal: "disposed" };
 
 async function post(tx: Tx, ctx: Ctx, a: Locked): Promise<string[]> {
   await lockPositions(tx, ctx, a.lines.map((l) => [l.variantId, a.warehouseId, l.batchId] as const));
   const legs: Leg[] = [];
   const serialMoves: { ids: string[]; to: SerialStatus }[] = [];
+  const newSerials: Prisma.SerialUnitCreateManyInput[] = [];
   let sellableBin: string | null = null;
+  if (a.kind === "opening") {
+    // MV-04: a backdated opening never lands before history that depends on it.
+    const seen = await tx.inventoryMovement.findFirst({
+      where: { companyId: ctx.companyId, warehouseId: a.warehouseId, variantId: { in: a.lines.map((l) => l.variantId) } }, include: { variant: { select: { sku: true } } },
+    });
+    if (seen) throw new AppError("conflict", `${seen.variant.sku} already has stock history here; correct it with an adjustment or count`, { reason: "has_history", sku: seen.variant.sku });
+  }
   for (const l of a.lines) {
     const q = dec(l.qty);
     const base = { variantId: l.variantId, warehouseId: a.warehouseId, batchId: l.batchId, line: l.lineNo, reasonCode: a.reasonCode, note: a.note ?? undefined };
     const push = (binId: string, leg: Omit<Leg, keyof typeof base | "binId" | "leg">) =>
       legs.push({ ...base, ...leg, binId, leg: legs.filter((x) => x.line === l.lineNo).length + 1 });
 
-    if (a.kind === "adjustment" && q.gt(0)) {
+    if ((a.kind === "adjustment" && q.gt(0)) || a.kind === "opening") {
       sellableBin ??= l.binId ? null : (await tx.bin.findFirst({ where: { warehouseId: a.warehouseId, isDefaultSellable: true, archived: false } }))?.id ?? null;
       const binId = l.binId ?? sellableBin;
       if (!binId) throw new AppError("conflict", "Warehouse has no default sellable bin", { reason: "missing_bin" });
-      push(binId, { type: "adjustment_in", delta: { onHand: q }, ...(l.unitCost != null ? { unitCost: l.unitCost } : {}) });
+      const serialized = l.variant.product.isSerialized ? { serialized: true as const } : {};
+      push(binId, { type: a.kind === "opening" ? "opening_balance" : "adjustment_in", delta: { onHand: q }, ...(l.unitCost != null ? { unitCost: l.unitCost } : {}), ...serialized });
+      for (const serialNo of l.serials) {
+        newSerials.push({ companyId: ctx.companyId, variantId: l.variantId, serialNo, batchId: l.batchId, status: "in_stock", warehouseId: a.warehouseId, binId });
+      }
       continue;
     }
-    const kind = a.kind === "adjustment" ? null : a.kind;
+    const kind = a.kind === "adjustment" ? null : a.kind; // opening was handled above
     const bucket: Exclude<Bucket, "reserved"> = kind === "repair" ? "damaged" : kind === "disposal" ? (l.bucket as PhysicalBucket) : "onHand";
     const n = q.abs();
     const delta = (k: Dec): Leg["delta"] =>
@@ -251,7 +284,13 @@ async function post(tx: Tx, ctx: Ctx, a: Locked): Promise<string[]> {
       }
     }
   }
-  const posted = await postMovements(tx, ctx, { sourceType: "stock_adjustment", sourceId: a.id, action: a.kind === "adjustment" ? "apply" : a.kind, legs });
+  const posted = await postMovements(tx, ctx, {
+    sourceType: "stock_adjustment", sourceId: a.id, action: a.kind === "adjustment" ? "apply" : a.kind, legs, postedAt: a.asOf ?? undefined,
+  });
+  if (newSerials.length) {
+    await assertSerialsFree(tx, ctx, newSerials.map((x) => x.serialNo));
+    await tx.serialUnit.createMany({ data: newSerials });
+  }
   for (const m of serialMoves) await tx.serialUnit.updateMany({ where: { id: { in: m.ids } }, data: { status: m.to, version: { increment: 1 } } });
   return posted.movements.map((m) => m.id);
 }
