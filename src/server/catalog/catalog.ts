@@ -248,12 +248,14 @@ export async function updateProduct(
   return after;
 }
 
-// Archiving must not strand reservations or open PO lines (flow 3); Part 6 adds transfers.
-async function assertNoOpenReservations(tx: Tx, where: Prisma.ReservationWhereInput & Prisma.PoLineWhereInput) {
+// Archiving must not strand reservations, open PO lines or open transfer lines (flow 3).
+async function assertNoOpenReservations(tx: Tx, where: Prisma.ReservationWhereInput & Prisma.PoLineWhereInput & Prisma.TransferLineWhereInput) {
   const open = await tx.reservation.count({ where: { ...where, status: { in: ["active", "partially_fulfilled"] } } });
   if (open) throw new AppError("conflict", `Release or fulfil the ${open} open reservation(s) first`, { reason: "open_reservations", count: open });
   const lines = await tx.poLine.count({ where: { ...where, removed: false, po: { status: { in: ["draft", "submitted", "approved", "ordered", "partially_received"] } } } });
   if (lines) throw new AppError("conflict", `Close or cancel the ${lines} open PO line(s) first`, { reason: "open_po_lines", count: lines });
+  const moving = await tx.transferLine.count({ where: { ...where, transfer: { status: { in: ["draft", "submitted", "approved", "in_transit", "partially_received"] } } } });
+  if (moving) throw new AppError("conflict", `Finish or cancel the ${moving} open transfer line(s) first`, { reason: "open_transfer_lines", count: moving });
 }
 
 async function findProduct(tx: Tx, ctx: Ctx, id: string) {
@@ -558,4 +560,12 @@ export async function variantByCode(ctx: Ctx, code: string) {
     throw new AppError("validation_error", hit?.result === "ambiguous" ? `${code} matches ${hit.matches.map((m) => m.sku).join(", ")}; enter the exact SKU` : `${code}: SKU not found`);
   }
   return hit.matches[0].variantId;
+}
+
+// Batch typed by number on a form → its id; null when no number given.
+export async function batchByNo(ctx: Ctx, variantId: string, batchNo: string | undefined) {
+  if (!batchNo) return null;
+  const b = await db.batch.findFirst({ where: { companyId: ctx.companyId, variantId, batchNo } });
+  if (!b) throw new AppError("validation_error", `Unknown batch ${batchNo}`, { field: "batchNo" });
+  return b.id;
 }

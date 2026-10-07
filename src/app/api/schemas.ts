@@ -97,6 +97,31 @@ export const ReceiptCreate = z.object({
 export const ReceiptReverse = z.object({ reason: text(2000) });
 export const ExcessDecision = z.object({ approve: z.boolean(), comment: text(2000).nullable().optional() });
 
+// ───────────── Part 6: transfers, adjustments ─────────────
+const zSignedQty = z.union([z.string(), z.number()]).transform(String)
+  .refine((s) => /^-?\d{1,14}(\.\d{1,4})?$/.test(s) && Number(s) !== 0, "Must be a non-zero number with ≤ 4 decimals");
+const zSerials = z.array(text(100)).max(10000).optional();
+export const TransferCreate = z.object({
+  fromWarehouseId: zId, toWarehouseId: zId, notes: text(2000).nullable().optional(),
+  lines: z.array(z.object({ variantId: zId, qty: zQty4, batchId: zId.nullable().optional() })).min(1).max(500),
+});
+export const TransferAction = z.object({
+  ...zVersion, comment: text(2000).nullable().optional(), reason: text(2000).nullable().optional(), note: text(2000).nullable().optional(),
+  approve: z.boolean().optional(), // variance
+  lines: z.array(z.object({
+    lineId: zId, qty: zQty0, serials: zSerials, // ship
+    received: zQty0, damaged: zQty0, missing: zQty0, binId: zId.optional(), damagedSerials: zSerials, // receive
+  })).max(500).optional(),
+});
+export const AdjustmentCreate = z.object({
+  kind: z.enum(["adjustment", "damage", "repair", "disposal"]), warehouseId: zId, reasonCode: text(50), note: text(2000).nullable().optional(),
+  lines: z.array(z.object({
+    variantId: zId, qty: zSignedQty, batchId: zId.nullable().optional(), binId: zId.nullable().optional(),
+    bucket: z.enum(["damaged", "expired", "blocked"]).nullable().optional(), unitCost: zDec.nullable().optional(), serials: zSerials,
+  })).min(1).max(500),
+});
+export const AdjustmentAction = z.object({ ...zVersion, comment: text(2000).nullable().optional() });
+
 // ───────────── Part 5: sales channels ─────────────
 export const ReserveBody = z.object({
   variantId: zId,

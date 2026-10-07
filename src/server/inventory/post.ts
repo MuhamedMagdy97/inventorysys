@@ -18,9 +18,10 @@ const ZERO = dec(0);
 export type Bucket = "onHand" | "blocked" | "damaged" | "expired" | "reserved";
 const PHYSICAL = ["onHand", "blocked", "damaged", "expired"] as const;
 
-type Kind = "in" | "out" | "internal" | "reserve";
+type Kind = "in" | "out" | "internal" | "reserve" | "variance";
 // Allowed sign per bucket (doc 08 §3). in/out change valued stock; internal moves
-// between buckets/bins at unchanged value; reserve touches only qty_reserved.
+// between buckets/bins at unchanged value; reserve touches only qty_reserved; variance
+// (transfer_variance) moves no bucket and books an in-transit loss (doc 11 §5).
 const SHAPES: Partial<Record<MovementType, { kind: Kind; signs: Partial<Record<Bucket, 1 | -1>>; move?: true }>> = {
   opening_balance: { kind: "in", signs: { onHand: 1 } },
   purchase_receipt: { kind: "in", signs: { onHand: 1, damaged: 1, expired: 1 } },
@@ -43,8 +44,8 @@ const SHAPES: Partial<Record<MovementType, { kind: Kind; signs: Partial<Record<B
   putaway_in: { kind: "internal", signs: { onHand: 1 } },
   reservation: { kind: "reserve", signs: { reserved: 1 } },
   reservation_release: { kind: "reserve", signs: { reserved: -1 } },
-  // ponytail: transfer_variance (Part 6) and cost_correction (later) need in-transit /
-  // cost-layer rules first; they are rejected until then.
+  transfer_variance: { kind: "variance", signs: {} },
+  // ponytail: cost_correction needs cost-layer rules first; rejected until then.
 };
 
 // Inbound types whose unit cost defaults to the current WAC when not given.
@@ -58,6 +59,7 @@ export type Leg = {
   batchId?: string | null;
   delta: Partial<Record<Bucket, DecValue>>;
   unitCost?: DecValue; // inbound legs; outbound/internal snapshot WAC
+  value?: DecValue; // in / variance legs: exact value ≥ 0 instead of qty × unitCost (transfer settlement)
   line: number | string; // with `leg`, forms the derived key {source_type}:{source_id}:{line}:{leg}
   leg?: number;
   reasonCode: string;
@@ -158,7 +160,8 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
       } else if (shape.kind === "in") {
         unitCost = l.unitCost != null ? dec(l.unitCost) : COST_DEFAULTS_TO_WAC.includes(l.type) ? wac : null;
         if (unitCost == null || unitCost.lt(0)) throw new AppError("validation_error", `${l.type} needs a unit cost ≥ 0`);
-        valueDelta = qty.times(unitCost).toDecimalPlaces(4);
+        valueDelta = l.value != null ? dec(l.value) : qty.times(unitCost).toDecimalPlaces(4);
+        if (valueDelta.lt(0)) throw new AppError("validation_error", "Leg value must be ≥ 0");
       } else if (shape.kind === "out") {
         unitCost = wac;
         // Last units out take the remaining value exactly, so value hits 0 with qty.
@@ -169,6 +172,10 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
       c.qty = c.qty.plus(qty);
       c.value = c.value.plus(valueDelta);
       c.touched = true;
+    } else if (shape.kind === "variance") {
+      // No cost row: in-transit units belong to no warehouse's stock value; only the loss is booked.
+      unitCost = dec(l.unitCost ?? 0);
+      valueDelta = dec(l.value).neg();
     }
 
     rows.push({
@@ -275,6 +282,10 @@ function normalize(ctx: Ctx, input: PostInput, l: Leg): Norm {
       throw new AppError("validation_error", `${l.type} cannot change ${k} by ${d[k].toString()}`);
     }
   }
+  if (shape.kind === "variance") {
+    if (l.binId || l.value == null || dec(l.value).lt(0)) throw new AppError("validation_error", "transfer_variance carries a value ≥ 0 and no bin");
+    return { ...l, d, binId: null, batchId: l.batchId ?? null, key: legKey(input.sourceType, input.sourceId, l) };
+  }
   if (Object.values(d).every((x) => x.isZero())) throw new AppError("validation_error", "Zero-quantity leg");
   if (shape.move && !PHYSICAL.reduce((t, k) => t.plus(d[k]), ZERO).isZero()) {
     throw new AppError("validation_error", `${l.type} must move equal quantities between buckets`);
@@ -354,8 +365,9 @@ type PosState = {
 // stable order, and loads SUM(on_hand) over all bins of each position. Exported
 // for reserve/fulfil, which must read ATP under the same lock before deciding.
 export async function lockPositions(
-  tx: Tx, ctx: Ctx, positions: (readonly [string, string, string | null])[],
+  tx: Tx, ctx: Ctx, all: (readonly [string, string, string | null])[],
 ): Promise<Map<string, PosState>> {
+  const positions = uniq(all, (p) => posKey(...p)); // documents may repeat a position across lines
   const vs = positions.map((p) => p[0]), ws = positions.map((p) => p[1]), bs = positions.map((p) => p[2]);
   await tx.$executeRaw`
     INSERT INTO stock_allocation (id, company_id, variant_id, warehouse_id, batch_id, updated_at)
@@ -388,6 +400,40 @@ export async function lockPositions(
     });
   }
   if (out.size !== positions.length) throw new AppError("not_found", "Stock position not found");
+  return out;
+}
+
+// Which bins to take `qty` of `bucket` from (SO-05): the given bin, else default sellable
+// first, then sellable, then by code. Call after lockPositions so no posting slips in;
+// postMovements re-checks every bin under its own lock anyway.
+export async function pickBins(
+  tx: Tx,
+  ctx: Ctx,
+  p: { variantId: string; warehouseId: string; batchId: string | null; qty: Dec; bucket?: Exclude<Bucket, "reserved">; binId?: string | null },
+): Promise<{ binId: string; qty: Dec }[]> {
+  const bucket = p.bucket ?? "onHand";
+  const rows = await tx.stockBalance.findMany({
+    where: { companyId: ctx.companyId, variantId: p.variantId, warehouseId: p.warehouseId, batchId: p.batchId, binId: p.binId ?? undefined, [bucket]: { gt: 0 } },
+    include: { bin: true },
+  });
+  rows.sort((a, b) =>
+    Number(b.bin.isDefaultSellable) - Number(a.bin.isDefaultSellable) ||
+    Number(b.bin.type === "sellable") - Number(a.bin.type === "sellable") ||
+    a.bin.code.localeCompare(b.bin.code));
+  const out: { binId: string; qty: Dec }[] = [];
+  let left = p.qty;
+  for (const r of rows) {
+    if (!left.gt(0)) break;
+    const take = Dec.min(dec(r[bucket]), left);
+    out.push({ binId: r.binId, qty: take });
+    left = left.minus(take);
+  }
+  if (left.gt(0)) {
+    throw new AppError("insufficient_stock", `Not enough ${bucket} to take from`, {
+      variantId: p.variantId, warehouseId: p.warehouseId, batchId: p.batchId, binId: p.binId ?? null,
+      bucket, requested: p.qty.toString(), available: p.qty.minus(left).toString(),
+    });
+  }
   return out;
 }
 

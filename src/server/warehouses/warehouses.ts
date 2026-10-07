@@ -3,6 +3,7 @@ import { writeAudit } from "@/server/core/audit";
 import { inScope, requirePermission, type Ctx } from "@/server/core/ctx";
 import { AppError, assertVersion } from "@/server/core/errors";
 import { db, type Tx } from "@/server/db";
+import { OPEN_TRANSFER } from "@/server/inventory/transfers";
 
 // Doc 06. WH-01/WH-05: every warehouse gets a default sellable, receiving, quarantine and damaged bin.
 export const DEFAULT_BINS = [
@@ -98,17 +99,18 @@ export async function updateWarehouse(
   return after;
 }
 
-// WH-02 / edge #5. Open POs stand for expected receipts; Part 6/8 add transfers (incl. in-transit, edge #25) and counts.
+// WH-02 / edge #5. Open POs stand for expected receipts; open transfers either way incl. in-transit (edge #25). Part 8 adds counts.
 async function assertWarehouseEmpty(tx: Tx, warehouseId: string) {
-  const [stock, reserved, reservations, openPos] = await Promise.all([
+  const [stock, reserved, reservations, openPos, openTransfers] = await Promise.all([
     tx.stockBalance.count({ where: { warehouseId, OR: [{ onHand: { gt: 0 } }, { blocked: { gt: 0 } }, { damaged: { gt: 0 } }, { expired: { gt: 0 } }] } }),
     tx.stockAllocation.count({ where: { warehouseId, qtyReserved: { gt: 0 } } }),
     tx.reservation.count({ where: { warehouseId, status: { in: ["active", "partially_fulfilled"] } } }),
     tx.purchaseOrder.count({ where: { warehouseId, status: { in: ["draft", "submitted", "approved", "ordered", "partially_received"] } } }),
+    tx.transfer.count({ where: { OR: [{ fromWarehouseId: warehouseId }, { toWarehouseId: warehouseId }], status: { in: OPEN_TRANSFER } } }),
   ]);
-  if (stock || reserved || reservations || openPos) {
-    throw new AppError("conflict", "Warehouse still holds stock, open reservations or open POs; empty and close it first (WH-02)", {
-      reason: "not_empty", stockPositions: stock, reservedPositions: reserved, openReservations: reservations, openPos,
+  if (stock || reserved || reservations || openPos || openTransfers) {
+    throw new AppError("conflict", "Warehouse still holds stock, open reservations, POs or transfers; empty and close it first (WH-02)", {
+      reason: "not_empty", stockPositions: stock, reservedPositions: reserved, openReservations: reservations, openPos, openTransfers,
     });
   }
 }

@@ -5,7 +5,7 @@ import { requirePermission, type Ctx } from "@/server/core/ctx";
 import { AppError } from "@/server/core/errors";
 import type { Tx } from "@/server/db";
 import { readSettings } from "@/server/settings/settings";
-import { dec, lockPositions, postMovements, type Dec, type DecValue, type Leg } from "./post";
+import { dec, lockPositions, pickBins, postMovements, type Dec, type DecValue, type Leg } from "./post";
 
 // Reservations (doc 12). Lock order everywhere: reservation row → allocation rows → bin rows.
 
@@ -237,30 +237,17 @@ export async function fulfil(
   let left = qty;
   for (const line of lines) {
     if (!left.gt(0)) break;
-    let n = Dec_min(remaining(line), left);
+    const n = Dec_min(remaining(line), left);
     if (!n.gt(0)) continue;
     lineTake.set(line.id, n);
     left = left.minus(n);
-    // SO-05: pick bins — default sellable first, then sellable, then by code.
-    const bins = await tx.stockBalance.findMany({
-      where: { variantId: r.variantId, warehouseId: r.warehouseId, batchId: line.batchId, onHand: { gt: 0 } },
-      include: { bin: true },
-    });
-    bins.sort((a, b) =>
-      Number(b.bin.isDefaultSellable) - Number(a.bin.isDefaultSellable) ||
-      Number(b.bin.type === "sellable") - Number(a.bin.type === "sellable") ||
-      a.bin.code.localeCompare(b.bin.code));
-    for (const b of bins) {
-      if (!n.gt(0)) break;
-      const pick = Dec_min(dec(b.onHand), n);
+    for (const b of await pickBins(tx, ctx, { variantId: r.variantId, warehouseId: r.warehouseId, batchId: line.batchId, qty: n })) {
       legs.push({
         type: "sale_fulfilment", variantId: r.variantId, warehouseId: r.warehouseId, binId: b.binId,
-        batchId: line.batchId, delta: { onHand: pick.neg(), reserved: pick.neg() },
+        batchId: line.batchId, delta: { onHand: b.qty.neg(), reserved: b.qty.neg() },
         line: legs.length + 1, reasonCode: "fulfil",
       });
-      n = n.minus(pick);
     }
-    if (n.gt(0)) throw new AppError("insufficient_stock", "Reserved stock is not physically in any bin", { batchId: line.batchId });
   }
 
   // Each fulfil of a given version is a distinct source; a replay of the same version is a version_conflict above.

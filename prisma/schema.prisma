@@ -46,6 +46,9 @@ model Company {
   suppliers          Supplier[]
   salesOrderRefs     SalesOrderRef[]
   notifications      Notification[]
+  transfers          Transfer[]
+  stockAdjustments   StockAdjustment[]
+  approvals          Approval[]
 
   @@map("company")
 }
@@ -69,16 +72,19 @@ model User {
   createdAt        DateTime      @default(now()) @map("created_at")
   updatedAt        DateTime      @default(now()) @updatedAt @map("updated_at")
 
-  company           Company         @relation(fields: [companyId], references: [id])
-  sessions          Session[]
-  accounts          Account[]
-  twofactors        TwoFactor[]
-  roles             UserRole[]
-  warehouses        UserWarehouse[]
-  managedWarehouses Warehouse[]     @relation("WarehouseManager")
-  createdPos        PurchaseOrder[] @relation("PoCreator")
-  poApprovals       PoApproval[]    @relation("PoApprover")
-  receipts          GoodsReceipt[]  @relation("ReceiptReceiver")
+  company            Company           @relation(fields: [companyId], references: [id])
+  sessions           Session[]
+  accounts           Account[]
+  twofactors         TwoFactor[]
+  roles              UserRole[]
+  warehouses         UserWarehouse[]
+  managedWarehouses  Warehouse[]       @relation("WarehouseManager")
+  createdPos         PurchaseOrder[]   @relation("PoCreator")
+  poApprovals        PoApproval[]      @relation("PoApprover")
+  receipts           GoodsReceipt[]    @relation("ReceiptReceiver")
+  createdTransfers   Transfer[]        @relation("TransferCreator")
+  createdAdjustments StockAdjustment[] @relation("AdjustmentCreator")
+  approvals          Approval[]        @relation("Approver")
 
   @@unique([companyId, id])
   @@index([companyId])
@@ -144,6 +150,9 @@ model Warehouse {
   purchaseOrders     PurchaseOrder[]
   goodsReceipts      GoodsReceipt[]
   serialUnits        SerialUnit[]
+  transfersOut       Transfer[]                 @relation("TransferFrom")
+  transfersIn        Transfer[]                 @relation("TransferTo")
+  stockAdjustments   StockAdjustment[]
 
   @@unique([companyId, code])
   @@unique([companyId, id])
@@ -166,12 +175,13 @@ model Bin {
   version            Int      @default(0)
   createdAt          DateTime @default(now()) @map("created_at")
 
-  company            Company             @relation(fields: [companyId], references: [id])
-  warehouse          Warehouse           @relation(fields: [warehouseId], references: [id])
+  company            Company               @relation(fields: [companyId], references: [id])
+  warehouse          Warehouse             @relation(fields: [warehouseId], references: [id])
   stockBalances      StockBalance[]
   inventoryMovements InventoryMovement[]
   receiptLines       ReceiptLine[]
   serialUnits        SerialUnit[]
+  adjustmentLines    StockAdjustmentLine[]
 
   @@unique([warehouseId, code])
   @@map("bin")
@@ -255,6 +265,8 @@ model ProductVariant {
   poLines            PoLine[]
   receiptLines       ReceiptLine[]
   serialUnits        SerialUnit[]
+  transferLines      TransferLine[]
+  adjustmentLines    StockAdjustmentLine[]
 
   @@unique([companyId, sku])
   @@unique([companyId, barcode])
@@ -270,14 +282,16 @@ model Batch {
   expiryDate DateTime? @map("expiry_date") @db.Date
   createdAt  DateTime  @default(now()) @map("created_at")
 
-  company            Company             @relation(fields: [companyId], references: [id])
-  variant            ProductVariant      @relation(fields: [variantId], references: [id])
+  company            Company               @relation(fields: [companyId], references: [id])
+  variant            ProductVariant        @relation(fields: [variantId], references: [id])
   stockBalances      StockBalance[]
   stockAllocations   StockAllocation[]
   inventoryMovements InventoryMovement[]
   reservationLines   ReservationLine[]
   receiptLines       ReceiptLine[]
   serialUnits        SerialUnit[]
+  transferLines      TransferLine[]
+  adjustmentLines    StockAdjustmentLine[]
 
   @@unique([variantId, batchNo])
   @@map("batch")
@@ -1158,6 +1172,7 @@ enum SerialStatus {
   damaged
   disposed
   returned_pending
+  lost // missing in transit (approved transfer_variance)
   reversed
 
   @@map("serial_status")
@@ -1166,24 +1181,26 @@ enum SerialStatus {
 // Doc 14 §3. One unit = one row (I-06). serial_no unique per company among
 // non-reversed units (partial unique index in the migration SQL).
 model SerialUnit {
-  id            String       @id @default(uuid(7))
-  companyId     String       @map("company_id")
-  variantId     String       @map("variant_id")
-  serialNo      String       @map("serial_no")
-  batchId       String?      @map("batch_id")
-  status        SerialStatus
-  warehouseId   String       @map("warehouse_id")
-  binId         String?      @map("bin_id")
-  receiptLineId String?      @map("receipt_line_id")
-  version       Int          @default(0)
-  createdAt     DateTime     @default(now()) @map("created_at")
-  updatedAt     DateTime     @default(now()) @updatedAt @map("updated_at")
+  id             String       @id @default(uuid(7))
+  companyId      String       @map("company_id")
+  variantId      String       @map("variant_id")
+  serialNo       String       @map("serial_no")
+  batchId        String?      @map("batch_id")
+  status         SerialStatus
+  warehouseId    String       @map("warehouse_id")
+  binId          String?      @map("bin_id")
+  receiptLineId  String?      @map("receipt_line_id")
+  transferLineId String?      @map("transfer_line_id") // last transfer that moved it
+  version        Int          @default(0)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
 
-  variant     ProductVariant @relation(fields: [variantId], references: [id])
-  batch       Batch?         @relation(fields: [batchId], references: [id])
-  warehouse   Warehouse      @relation(fields: [warehouseId], references: [id])
-  bin         Bin?           @relation(fields: [binId], references: [id])
-  receiptLine ReceiptLine?   @relation(fields: [receiptLineId], references: [id])
+  variant      ProductVariant @relation(fields: [variantId], references: [id])
+  batch        Batch?         @relation(fields: [batchId], references: [id])
+  warehouse    Warehouse      @relation(fields: [warehouseId], references: [id])
+  bin          Bin?           @relation(fields: [binId], references: [id])
+  receiptLine  ReceiptLine?   @relation(fields: [receiptLineId], references: [id])
+  transferLine TransferLine?  @relation(fields: [transferLineId], references: [id])
 
   @@index([variantId, warehouseId, status])
   @@map("serial_unit")
@@ -1237,4 +1254,168 @@ model Notification {
 
   @@index([companyId, userId, readAt])
   @@map("notification")
+}
+
+// ───────────────────────── Part 6: transfers, adjustments, approvals ─────────────────────────
+// Docs 11, 23, 25 (Approvals Inbox). Build decisions: doc 11 §5.
+
+enum TransferStatus {
+  draft
+  submitted
+  approved
+  in_transit
+  partially_received
+  completed
+  closed_with_variance
+  cancelled
+
+  @@map("transfer_status")
+}
+
+model Transfer {
+  id              String         @id @default(uuid(7))
+  companyId       String         @map("company_id")
+  number          String // TR-YYYY-00001
+  fromWarehouseId String         @map("from_warehouse_id")
+  toWarehouseId   String         @map("to_warehouse_id")
+  status          TransferStatus @default(draft)
+  notes           String?
+  reason          String? // cancel reason
+  createdBy       String         @map("created_by")
+  approvedBy      String?        @map("approved_by")
+  approvedAt      DateTime?      @map("approved_at")
+  shippedBy       String?        @map("shipped_by")
+  shippedAt       DateTime?      @map("shipped_at")
+  closedAt        DateTime?      @map("closed_at")
+  version         Int            @default(0)
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @default(now()) @updatedAt @map("updated_at")
+
+  company       Company        @relation(fields: [companyId], references: [id])
+  fromWarehouse Warehouse      @relation("TransferFrom", fields: [fromWarehouseId], references: [id])
+  toWarehouse   Warehouse      @relation("TransferTo", fields: [toWarehouseId], references: [id])
+  creator       User           @relation("TransferCreator", fields: [createdBy], references: [id])
+  lines         TransferLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@index([fromWarehouseId, status])
+  @@index([toWarehouseId, status])
+  @@map("transfer")
+}
+
+// Base units. In transit = shipped − received − damaged − missing (doc 07: derived, never stored).
+model TransferLine {
+  id                 String  @id @default(uuid(7))
+  transferId         String  @map("transfer_id")
+  lineNo             Int     @map("line_no")
+  variantId          String  @map("variant_id")
+  batchId            String? @map("batch_id")
+  qtyRequested       Decimal @map("qty_requested") @db.Decimal(18, 4)
+  qtyShipped         Decimal @default(0) @map("qty_shipped") @db.Decimal(18, 4)
+  qtyReceived        Decimal @default(0) @map("qty_received") @db.Decimal(18, 4)
+  qtyDamaged         Decimal @default(0) @map("qty_damaged") @db.Decimal(18, 4)
+  qtyMissing         Decimal @default(0) @map("qty_missing") @db.Decimal(18, 4) // approved transfer_variance
+  qtyMissingReported Decimal @default(0) @map("qty_missing_reported") @db.Decimal(18, 4) // awaiting approval
+  shippedValue       Decimal @default(0) @map("shipped_value") @db.Decimal(18, 4) // relieved at source on ship
+  settledValue       Decimal @default(0) @map("settled_value") @db.Decimal(18, 4) // admitted at dest + lost
+
+  transfer Transfer       @relation(fields: [transferId], references: [id])
+  variant  ProductVariant @relation(fields: [variantId], references: [id])
+  batch    Batch?         @relation(fields: [batchId], references: [id])
+  serials  SerialUnit[]
+
+  @@unique([transferId, lineNo])
+  @@index([variantId])
+  @@map("transfer_line")
+}
+
+enum AdjustmentKind {
+  adjustment // ± on_hand (found / loss / correction)
+  damage // on_hand → damaged
+  repair // damaged → on_hand
+  disposal // − damaged | expired | blocked (terminal loss)
+
+  @@map("adjustment_kind")
+}
+
+enum AdjustmentStatus {
+  draft
+  submitted
+  approved
+  applied
+  cancelled
+
+  @@map("adjustment_status")
+}
+
+model StockAdjustment {
+  id          String           @id @default(uuid(7))
+  companyId   String           @map("company_id")
+  number      String // ADJ-YYYY-00001
+  kind        AdjustmentKind
+  warehouseId String           @map("warehouse_id")
+  status      AdjustmentStatus @default(draft)
+  reasonCode  String           @map("reason_code")
+  note        String?
+  createdBy   String           @map("created_by")
+  approvedBy  String?          @map("approved_by")
+  approvedAt  DateTime?        @map("approved_at")
+  appliedBy   String?          @map("applied_by")
+  appliedAt   DateTime?        @map("applied_at")
+  version     Int              @default(0)
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  company   Company               @relation(fields: [companyId], references: [id])
+  warehouse Warehouse             @relation(fields: [warehouseId], references: [id])
+  creator   User                  @relation("AdjustmentCreator", fields: [createdBy], references: [id])
+  lines     StockAdjustmentLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@index([warehouseId, status])
+  @@map("stock_adjustment")
+}
+
+// qty is signed for `adjustment` (+ in / − out) and > 0 for the other kinds.
+model StockAdjustmentLine {
+  id           String   @id @default(uuid(7))
+  adjustmentId String   @map("adjustment_id")
+  lineNo       Int      @map("line_no")
+  variantId    String   @map("variant_id")
+  batchId      String?  @map("batch_id")
+  binId        String?  @map("bin_id") // null = picked at apply (out) / default sellable (in)
+  qty          Decimal  @db.Decimal(18, 4)
+  bucket       String? // disposal: damaged | expired | blocked
+  unitCost     Decimal? @map("unit_cost") @db.Decimal(18, 4) // adjustment in; default current WAC
+  serials      String[] // serialized units (damage / repair / disposal)
+
+  adjustment StockAdjustment @relation(fields: [adjustmentId], references: [id])
+  variant    ProductVariant  @relation(fields: [variantId], references: [id])
+  batch      Batch?          @relation(fields: [batchId], references: [id])
+  bin        Bin?            @relation(fields: [binId], references: [id])
+
+  @@unique([adjustmentId, lineNo])
+  @@index([variantId])
+  @@map("stock_adjustment_line")
+}
+
+// Approval timeline for transfers, adjustments and transfer variances (POs keep po_approval).
+model Approval {
+  id         String   @id @default(uuid(7))
+  companyId  String   @map("company_id")
+  entityType String   @map("entity_type") // transfer | transfer_variance | stock_adjustment
+  entityId   String   @map("entity_id")
+  actorId    String   @map("actor_id")
+  decision   String // approved | rejected
+  amount     Decimal? @db.Decimal(18, 4)
+  comment    String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id])
+  actor   User    @relation("Approver", fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@map("approval")
 }

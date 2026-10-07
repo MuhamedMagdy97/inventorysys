@@ -84,12 +84,15 @@ Spec: 12, 14 §5, 17 (partial), edge #18, 29, 32, 34. Build decisions: 12 §5 (S
 - Gate: buy → receive → reserve → fulfil E2E through HTTP (`src/app/api/sales.test.ts`); expiry-vs-fulfil race, killed-mid-job re-run, B-05 sweep, reconciler drift (`src/server/inventory/jobs.test.ts`).
 - Deferred: serialized reserve/fulfil + expiry sweep vs open transfers (edge #34) → Part 6; notification center/email → Part 9; multi-line atomic order reserve.
 
-## Part 6 — Transfers, adjustments, damage/repair/disposal, approvals inbox (closes P6 gate, minus counts)
-Spec: 11, 07 I-07, 23, 25 (Approvals Inbox), flows 9–12, 17, 27, 28, edge #10, 11, 23, 25, 31, 33.
-- T6.1 Transfers: ship/receive partials, derived in-transit, `transfer_variance`, closed_with_variance.
-- T6.2 Adjustments (all approved in MVP), damage/repair/disposal flows.
-- T6.3 Approvals inbox (all document types, SLA age, approve/reject with comment, double-approve → `version_conflict`).
-- Gate: missing/damaged-in-transit, over-receipt blocked, `reserved_conflict`, double-approve.
+## Part 6 — Transfers, adjustments, damage/repair/disposal, approvals inbox (closes P6 gate, minus counts) — tasks ✅ 2026-10-07; tag `part-6` after CI is green
+Spec: 11, 07 I-07, 23, 25 (Approvals Inbox), flows 9–12, 17, 27, 28, edge #10, 11, 23, 25, 31, 33. Build decisions: doc 11 §5.
+- [x] T6.1 Transfers: ship (one event, batch pinned per line, serials named) / repeatable partial receive, derived in-transit, damaged → dest damaged bin, missing reported → approved `transfer_variance` (loss at ship snapshot, exact settlement), completed / closed_with_variance. In-transit value line in `valueAt`/`liveValue` + reconciler check. Warehouse/product archive blocked by open transfers.
+- [x] T6.2 Adjustments (draft → submitted → approved → applied, separate `adjust_apply`), damage/repair/disposal (apply on approval); limits on value at WAC, I-07 at apply; serialized units for damage/repair/disposal.
+- [x] T6.3 Approvals inbox `/approvals` + `GET /api/approvals`: POs, over-deliveries, transfers, transfer losses, adjustments, ready-to-apply; SLA age (`approvalSlaHours` setting, default 48), over-limit flag, approve/reject with comment; stale decision → `version_conflict`.
+- [x] UI: `/transfers` (list, new, detail with ship/receive/variance), `/adjustments` (list, new, detail), `/approvals`.
+- [x] API: `POST|GET /api/transfers`, `GET /api/transfers/:id`, `POST /api/transfers/:id/{submit|approve|reject|cancel|ship|receive|variance}`, `POST|GET /api/adjustments`, `GET /api/adjustments/:id`, `POST /api/adjustments/:id/{submit|approve|reject|apply|cancel}`.
+- Gate: missing/damaged-in-transit, over-receipt blocked, `reserved_conflict`, double-approve (`src/server/inventory/transfers.test.ts`, `adjustments.test.ts`, HTTP `src/app/api/transfers.test.ts`).
+- Deferred: serialized found/loss adjustments → Part 8 counts; serialized reserve/fulfil → Part 7 (returns need fulfilled serials); draft editing of transfers/adjustments (reject → cancel + recreate for now); approval escalation job + reminders → Part 9; evidence uploads → Part 7.
 
 ## Part 7 — Returns + inspection (closes P7 gate)
 Spec: 13, 19 (INV-008/009/022), flows 8, 16, edge #12, 35.
