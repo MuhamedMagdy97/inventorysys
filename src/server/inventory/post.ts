@@ -68,7 +68,8 @@ export type Leg = {
   serialized?: true; // caller keeps serial_unit in step in the same transaction (I-06)
 };
 
-export type PostInput = { sourceType: string; sourceId: string; legs: Leg[]; action?: string };
+// postedAt: backdated created_at — opening_balance legs only (MV-04; a DB trigger backs it up).
+export type PostInput = { sourceType: string; sourceId: string; legs: Leg[]; action?: string; postedAt?: Date };
 
 export type PostResult = {
   movements: InventoryMovement[];
@@ -87,6 +88,9 @@ type Norm = Leg & { batchId: string | null; binId: string | null; d: Record<Buck
 export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise<PostResult> {
   if (input.legs.length === 0) throw new AppError("validation_error", "No movement legs (MV-01)");
   const legs = input.legs.map((l) => normalize(ctx, input, l));
+  if (input.postedAt && (input.postedAt > new Date() || legs.some((l) => l.type !== "opening_balance"))) {
+    throw new AppError("validation_error", "Only opening balances may be backdated, never into the future (MV-04)");
+  }
   if (new Set(legs.map((l) => l.key)).size !== legs.length) {
     throw new AppError("validation_error", "Duplicate leg key within one posting");
   }
@@ -190,6 +194,7 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
       sourceType: input.sourceType, sourceId: input.sourceId,
       reversesMovementId: l.reversesMovementId ?? null, reasonCode: l.reasonCode, note: l.note ?? null,
       actorId: ctx.userId, channel: ctx.channel ?? null, idempotencyKey: l.key,
+      ...(input.postedAt ? { createdAt: input.postedAt } : {}),
     });
   }
 

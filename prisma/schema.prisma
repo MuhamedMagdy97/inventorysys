@@ -49,6 +49,8 @@ model Company {
   transfers          Transfer[]
   stockAdjustments   StockAdjustment[]
   approvals          Approval[]
+  stockCounts        StockCount[]
+  importJobs         ImportJob[]
 
   @@map("company")
 }
@@ -85,6 +87,8 @@ model User {
   createdTransfers   Transfer[]        @relation("TransferCreator")
   createdAdjustments StockAdjustment[] @relation("AdjustmentCreator")
   approvals          Approval[]        @relation("Approver")
+  createdCounts      StockCount[]      @relation("CountCreator")
+  imports            ImportJob[]       @relation("ImportCreator")
 
   @@unique([companyId, id])
   @@index([companyId])
@@ -153,6 +157,7 @@ model Warehouse {
   transfersOut       Transfer[]                 @relation("TransferFrom")
   transfersIn        Transfer[]                 @relation("TransferTo")
   stockAdjustments   StockAdjustment[]
+  stockCounts        StockCount[]
 
   @@unique([companyId, code])
   @@unique([companyId, id])
@@ -182,6 +187,8 @@ model Bin {
   receiptLines       ReceiptLine[]
   serialUnits        SerialUnit[]
   adjustmentLines    StockAdjustmentLine[]
+  countLines         StockCountLine[]
+  scopedCounts       StockCount[]          @relation("CountScopeBin")
 
   @@unique([warehouseId, code])
   @@map("bin")
@@ -267,6 +274,7 @@ model ProductVariant {
   serialUnits        SerialUnit[]
   transferLines      TransferLine[]
   adjustmentLines    StockAdjustmentLine[]
+  countLines         StockCountLine[]
 
   @@unique([companyId, sku])
   @@unique([companyId, barcode])
@@ -292,6 +300,7 @@ model Batch {
   serialUnits        SerialUnit[]
   transferLines      TransferLine[]
   adjustmentLines    StockAdjustmentLine[]
+  countLines         StockCountLine[]
 
   @@unique([variantId, batchNo])
   @@map("batch")
@@ -1335,6 +1344,7 @@ enum AdjustmentKind {
   damage // on_hand → damaged
   repair // damaged → on_hand
   disposal // − damaged | expired | blocked (terminal loss)
+  opening // + on_hand at given unit cost, posted as of `as_of` (flow 26, MV-04)
 
   @@map("adjustment_kind")
 }
@@ -1363,6 +1373,7 @@ model StockAdjustment {
   approvedAt  DateTime?        @map("approved_at")
   appliedBy   String?          @map("applied_by")
   appliedAt   DateTime?        @map("applied_at")
+  asOf        DateTime?        @map("as_of") // kind opening: the backdated posting time (MV-04)
   version     Int              @default(0)
   createdAt   DateTime         @default(now()) @map("created_at")
   updatedAt   DateTime         @default(now()) @updatedAt @map("updated_at")
@@ -1418,4 +1429,126 @@ model Approval {
 
   @@index([entityType, entityId])
   @@map("approval")
+}
+
+// ───────────── Part 8: counts, imports ─────────────
+
+enum CountStatus {
+  open
+  counting
+  variance_review
+  approved
+  applied // terminal (= closed)
+  cancelled
+
+  @@map("count_status")
+}
+
+// Doc 23 / INV-023: snapshot at open; variance = counted − system qty at count time,
+// posted at apply under lock against the current balance.
+model StockCount {
+  id          String      @id @default(uuid(7))
+  companyId   String      @map("company_id")
+  number      String // CNT-YYYY-00001
+  warehouseId String      @map("warehouse_id")
+  binId       String?     @map("bin_id") // scope: one bin; null = whole warehouse
+  variantIds  String[]    @default([]) @map("variant_ids") // scope: these SKUs; empty = all
+  status      CountStatus @default(open)
+  snapshotAt  DateTime    @default(now()) @map("snapshot_at")
+  note        String?
+  createdBy   String      @map("created_by")
+  counters    String[]    @default([]) // everyone who entered a count (approver ≠ any of them)
+  approvedBy  String?     @map("approved_by")
+  approvedAt  DateTime?   @map("approved_at")
+  appliedBy   String?     @map("applied_by")
+  appliedAt   DateTime?   @map("applied_at")
+  version     Int         @default(0)
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @default(now()) @updatedAt @map("updated_at")
+
+  company   Company          @relation(fields: [companyId], references: [id])
+  warehouse Warehouse        @relation(fields: [warehouseId], references: [id])
+  bin       Bin?             @relation("CountScopeBin", fields: [binId], references: [id])
+  creator   User             @relation("CountCreator", fields: [createdBy], references: [id])
+  lines     StockCountLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@index([warehouseId, status])
+  @@map("stock_count")
+}
+
+model StockCountLine {
+  id               String    @id @default(uuid(7))
+  countId          String    @map("count_id")
+  lineNo           Int       @map("line_no")
+  binId            String    @map("bin_id")
+  variantId        String    @map("variant_id")
+  batchId          String?   @map("batch_id")
+  snapshotQty      Decimal   @default(0) @map("snapshot_qty") @db.Decimal(18, 4) // 0 = found while counting
+  countedQty       Decimal?  @map("counted_qty") @db.Decimal(18, 4)
+  countedSerials   String[]  @default([]) @map("counted_serials")
+  systemQty        Decimal?  @map("system_qty") @db.Decimal(18, 4) // bin on_hand at the count entry
+  systemSerials    String[]  @default([]) @map("system_serials")
+  countedBy        String?   @map("counted_by")
+  countedAt        DateTime? @map("counted_at")
+  recounts         Int       @default(0)
+  recountRequested Boolean   @default(false) @map("recount_requested")
+  qtyAtApply       Decimal?  @map("qty_at_apply") @db.Decimal(18, 4) // bin on_hand under lock before posting
+  variance         Decimal?  @db.Decimal(18, 4) // the posted delta
+
+  count   StockCount     @relation(fields: [countId], references: [id])
+  bin     Bin            @relation(fields: [binId], references: [id])
+  variant ProductVariant @relation(fields: [variantId], references: [id])
+  batch   Batch?         @relation(fields: [batchId], references: [id])
+
+  @@unique([countId, lineNo])
+  @@index([binId])
+  @@map("stock_count_line")
+}
+
+enum ImportType {
+  products
+  opening_balance
+
+  @@map("import_type")
+}
+
+enum ImportStatus {
+  previewed
+  completed
+  failed
+  cancelled
+
+  @@map("import_status")
+}
+
+// Flow 20 import history (doc 22 `import_history`): kept whatever the outcome.
+model ImportJob {
+  id          String       @id @default(uuid(7))
+  companyId   String       @map("company_id")
+  type        ImportType
+  status      ImportStatus @default(previewed)
+  fileName    String       @map("file_name")
+  fileSha256  String       @map("file_sha256")
+  fileSize    Int          @map("file_size")
+  warehouseId String?      @map("warehouse_id") // opening_balance
+  asOf        DateTime?    @map("as_of") // opening_balance
+  mode        String? // all_or_nothing | valid_only (set at confirm)
+  rows        Json // parsed rows: [{row, ...fields}]
+  errors      Json         @default("[]") // [{row, message}]
+  rowCount    Int          @map("row_count")
+  errorCount  Int          @map("error_count")
+  result      Json?
+  createdBy   String       @map("created_by")
+  confirmedBy String?      @map("confirmed_by")
+  confirmedAt DateTime?    @map("confirmed_at")
+  version     Int          @default(0)
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id])
+  creator User    @relation("ImportCreator", fields: [createdBy], references: [id])
+
+  @@index([companyId, createdAt])
+  @@map("import_job")
 }

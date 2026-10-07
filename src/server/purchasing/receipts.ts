@@ -55,7 +55,8 @@ async function grn(tx: Tx, ctx: Ctx) {
 }
 
 // B-01/B-02/RC-10: find or create the batch; expiry must be in the future and match.
-async function resolveBatch(tx: Tx, ctx: Ctx, v: { id: string; sku: string; product: { requiresBatch: boolean; requiresExpiry: boolean } }, l: ReceiptLineInput, supplierId: string) {
+// Also used by opening balances (Part 8), which have no supplier.
+export async function resolveBatch(tx: Tx, ctx: Ctx, v: { id: string; sku: string; product: { requiresBatch: boolean; requiresExpiry: boolean } }, l: Pick<ReceiptLineInput, "batchNo" | "expiryDate" | "mfgDate">, supplierId: string | null) {
   const batchNo = l.batchNo?.trim();
   if (!v.product.requiresBatch) {
     if (batchNo || l.expiryDate) throw new AppError("validation_error", `${v.sku} is not batch-tracked`, { field: "batchNo" });

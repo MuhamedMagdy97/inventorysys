@@ -7,7 +7,7 @@ import { AdjustmentCreate } from "../schemas";
 
 const Query = z.object({
   ...zPage, q: z.string().max(100).optional(), warehouseId: zId.optional(),
-  kind: z.enum(["adjustment", "damage", "repair", "disposal"]).optional(),
+  kind: z.enum(["adjustment", "damage", "repair", "disposal", "opening"]).optional(),
   status: z.enum(["draft", "submitted", "approved", "applied", "cancelled"]).optional(),
 });
 

@@ -11,7 +11,7 @@ import {
   type AdjustmentLineInput,
 } from "@/server/inventory/adjustments";
 
-const KINDS: AdjustmentKind[] = ["adjustment", "damage", "repair", "disposal"];
+const KINDS: AdjustmentKind[] = ["adjustment", "damage", "repair", "disposal", "opening"];
 const BUCKETS = ["damaged", "expired", "blocked"] as const;
 
 // Rows line.<i>.*; bins are typed by code within the chosen warehouse.
@@ -28,13 +28,19 @@ export async function createAdjustmentAction(_: ActionState, f: FormData): Promi
       const binCode = str(f, p + "bin");
       const bin = binCode ? await db.bin.findFirst({ where: { companyId: ctx.companyId, warehouseId, code: binCode } }) : null;
       if (binCode && !bin) throw new AppError("validation_error", `Unknown bin ${binCode}`, { field: "binId" });
+      const expiry = str(f, p + "expiryDate");
       lines.push({
-        variantId, qty: str(f, p + "qty") ?? "0", batchId: await batchByNo(ctx, variantId, str(f, p + "batchNo")), binId: bin?.id ?? null,
+        variantId, qty: str(f, p + "qty") ?? "0", binId: bin?.id ?? null,
+        // opening balances create the batch (flow 26); everything else picks an existing one
+        ...(kind === "opening"
+          ? { batchNo: str(f, p + "batchNo") ?? null, expiryDate: expiry ? new Date(expiry) : null }
+          : { batchId: await batchByNo(ctx, variantId, str(f, p + "batchNo")) }),
         bucket: kind === "disposal" ? (BUCKETS.find((b) => b === str(f, p + "bucket")) ?? "damaged") : null,
         unitCost: str(f, p + "unitCost") ?? null, serials: (str(f, p + "serials") ?? "").split(/[\s,]+/).filter(Boolean),
       });
     }
-    return createAdjustment(tx, ctx, { kind, warehouseId, reasonCode: str(f, "reasonCode") ?? "", note: clearable(f, "note"), lines });
+    const asOf = str(f, "asOf");
+    return createAdjustment(tx, ctx, { kind, warehouseId, reasonCode: str(f, "reasonCode") ?? "", note: clearable(f, "note"), asOf: asOf ? new Date(asOf) : null, lines });
   }, "Created", (a) => `/adjustments/${a.id}`);
 }
 

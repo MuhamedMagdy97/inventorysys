@@ -62,7 +62,7 @@ Spec: 04, 05, 06, 22, flows 1–5, edge #3–8, #24.
 - [x] T3.4 Scan lookup `POST /api/products/lookup` (SKU/barcode/alias, never auto-pick on ambiguity).
 - [x] T3.5 UI: products list/detail tabs, categories/brands, suppliers, warehouses + bin tree.
 - Gate: SKU immutability + alias flow, barcode alias window, archive-blocked-with-stock, category cycle rejected → `src/server/catalog/catalog.test.ts`, `src/server/warehouses/warehouses.test.ts`, `src/server/suppliers/suppliers.test.ts`, `src/app/api/catalog.test.ts`.
-- Deferred: image/document **uploads** (URL only for now; allowlist + size caps with imports, Part 8); stock migration for a replaced SKU uses the Part 6 adjustment.
+- Deferred: image/document **uploads** (URL only for now; import files got allowlist + size caps in Part 8, product uploads follow Part 7 evidence uploads); stock migration for a replaced SKU uses the Part 6 adjustment.
 
 ## Part 4 — Purchasing + receiving (closes P5 gate) — tasks ✅ 2026-10-05; tag `part-4` after CI is green
 Spec: 09, 10, 14 §3 (serial capture), 23 (PO), flows 6–8, edge #1, 9, 21, 22, 27, 36. Build decisions: 09 §5 (PO-09…13), 10 §5 (RC-08…13).
@@ -101,12 +101,15 @@ Spec: 13, 19 (INV-008/009/022), flows 8, 16, edge #12, 35.
 - T7.3 Inspection screen (quarantine list by reason, evidence upload with allowlist + size caps).
 - Gate: return > fulfilled blocked, restock only after pass, linked cost relieved correctly.
 
-## Part 8 — Counts, opening balance, import/export
-Spec: 23 (count), 19 INV-023, flows 19–21, 26, edge #14, 28.
-- T8.1 Stock counts: snapshot, count entry (scan), variance recomputed at apply under lock, recount loop.
-- T8.2 Opening balance flow (dual control, the only backdated posting).
-- T8.3 CSV/Excel import: upload → preview → confirm (all-or-nothing default), import history; scoped export with audit.
-- Gate: count with concurrent postings applies the correct variance; import rollback; export is audited.
+## Part 8 — Counts, opening balance, import/export — tasks ✅ 2026-10-07; tag `part-8` after CI is green
+Spec: 23 (count), 19 INV-023, flows 19–21, 26, edge #14, 28. Build decisions: doc 23 (count), doc 08 MV-04, doc 20 flows 20/21/26.
+- [x] T8.1 Stock counts (`src/server/inventory/counts.ts`): open → counting → variance_review → approved → applied (+ cancel), snapshot at open (whole warehouse / one bin / SKU list), count entry with scan + found items, system qty recorded per entry under the position lock, variance posted at apply under lock against the current balance (`adjustment_in/out`, I-07), forced recount above `countRecountPct` (setting, default 10 %) + reviewer recount, approver ≠ creator/counters. Serialized found/loss (unit → `lost`, unknown/lost unit found → in_stock). WH-02/03: open counts block warehouse and bin archive.
+- [x] T8.2 Opening balance = adjustment kind `opening` (create: `adjust_create` or `imports.run`; approve ≠ creator posts `opening_balance` at `as_of`): unit cost required, batch no + expiry create the batch, serials create units, only for items with no history in that warehouse. MV-04 enforced by `postMovements` and a DB trigger.
+- [x] T8.3 Import (`src/server/imports/`): CSV + .xlsx (no new dependency: zip read with node:zlib), ≤ 5 MB / 10 000 rows; `products` and `opening_balance` types; preview = dry run in a rolled-back transaction (per-row savepoints, edge #14); confirm all-or-nothing (default) or valid-only; `import_job` history kept on failure; upload/preview/confirm/failed audited. Stock export CSV scoped to the caller's warehouses with one `export` audit row.
+- [x] UI: `/counts` (list + open), `/counts/[id]` (count sheet with scan/found row, variance table with recount selection, approve/apply/cancel), `/imports` (upload, export, history), `/imports/[id]` (preview with row errors, confirm mode), opening kind on `/adjustments/new`, recount % on settings; counts + count apply in `/approvals`.
+- [x] API: `POST|GET /api/counts`, `GET /api/counts/:id`, `POST /api/counts/:id/{entries|submit|recount|approve|apply|cancel}`, `POST|GET /api/imports` (multipart), `GET /api/imports/:id`, `POST /api/imports/:id/{confirm|cancel}`, `GET /api/exports/stock`; `/api/adjustments` takes kind `opening` + `asOf`.
+- Gate: count vs concurrent postings (incl. apply racing a posting), recount loop, serialized found/loss, I-07, archive guards, opening dual control + backdated value-at-T + MV-04 trigger → `src/server/inventory/counts.test.ts`; import rollback / valid-only / opening import / scoped audited export → `src/server/imports/imports.test.ts`; HTTP `src/app/api/counts.test.ts`. Reconciler clean after the suite.
+- Deferred: blind counts (counters see the snapshot qty today); counting damaged/expired/blocked buckets (on_hand only); a serial found in another bin of the same warehouse is rejected at entry (move it first) instead of an automatic putaway; Excel *export* (CSV opens in Excel); async import/export jobs for very large files (sync up to 10 000 rows); product image/document uploads (Part 3 deferral) → with Part 7 evidence uploads.
 
 ## Part 9 — Reports, dashboard, notifications, search (closes P8 gate)
 Spec: 16 (V1 set), 17, 25 (global search).

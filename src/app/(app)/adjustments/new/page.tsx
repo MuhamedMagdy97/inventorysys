@@ -34,15 +34,17 @@ export default async function NewAdjustmentPage() {
                 <option value="damage">Mark damaged</option>
                 <option value="repair">Repair to stock</option>
                 <option value="disposal">Dispose (write off)</option>
+                <option value="opening">Opening balance</option>
               </select>
             </label>
             <label className="label">Warehouse<select name="warehouseId" required className="input">{res.data.map((w) => <option key={w.id} value={w.id}>{w.code} · {w.name}</option>)}</select></label>
             <label className="label">Reason code<input name="reasonCode" required maxLength={50} placeholder="found, loss, dropped…" className="input" /></label>
             <label className="label">Note / evidence<input name="note" className="input" /></label>
+            <label className="label">Opening as of (opening only)<input name="asOf" type="datetime-local" className="input" /></label>
           </div>
           <div className="overflow-x-auto">
             <table className="table">
-              <thead><tr><th>SKU / barcode</th><th>Qty</th><th>Batch no.</th><th>Bin code</th><th>Bucket (disposal)</th><th>Unit cost (found)</th><th>Serials</th></tr></thead>
+              <thead><tr><th>SKU / barcode</th><th>Qty</th><th>Batch no.</th><th>Expiry (opening)</th><th>Bin code</th><th>Bucket (disposal)</th><th>Unit cost (found / opening)</th><th>Serials</th></tr></thead>
               <tbody>
                 {Array.from({ length: 6 }, (_, i) => {
                   const p = `line.${i}.`;
@@ -51,6 +53,7 @@ export default async function NewAdjustmentPage() {
                       <td><input name={p + "sku"} aria-label={`Line ${i + 1} SKU`} className="input w-36 font-mono" /></td>
                       <td><input name={p + "qty"} inputMode="decimal" aria-label={`Line ${i + 1} quantity`} className="input w-20" /></td>
                       <td><input name={p + "batchNo"} aria-label={`Line ${i + 1} batch`} className="input w-24" /></td>
+                      <td><input name={p + "expiryDate"} type="date" aria-label={`Line ${i + 1} expiry`} className="input w-36" /></td>
                       <td><input name={p + "bin"} placeholder="auto" aria-label={`Line ${i + 1} bin`} className="input w-20" /></td>
                       <td>
                         <select name={p + "bucket"} aria-label={`Line ${i + 1} bucket`} className="input">
@@ -65,7 +68,7 @@ export default async function NewAdjustmentPage() {
               </tbody>
             </table>
           </div>
-          <p className="text-xs text-muted">Adjustments: positive qty = found, negative = loss. Damage, repair and disposal take positive quantities and apply when approved.</p>
+          <p className="text-xs text-muted">Adjustments: positive qty = found, negative = loss. Damage, repair, disposal and opening balances take positive quantities and apply when approved. Opening balances need a unit cost, create batches by number + expiry, list serials, and may be dated back (only for items with no stock history here). Large openings: use Import / export.</p>
         </ActionForm>
       </section>
     </div>
