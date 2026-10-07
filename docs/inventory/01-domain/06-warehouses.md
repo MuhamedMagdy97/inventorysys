@@ -7,7 +7,7 @@
 
 ## 2. Rules
 - WH-01: Bin codes unique within warehouse; quarantine + damaged bins auto-created per warehouse; a warehouse always keeps ≥1 active quarantine and ≥1 active damaged bin, and the default sellable/receiving bins cannot be archived (make another bin the default first).
-- WH-02: Archive warehouse blocked if any `stock_balance` with (on_hand|damaged|expired|blocked) > 0, any `stock_allocation.qty_reserved` > 0, any open transfer/receipt/count, or any active reservation references it. Must empty + close first.
+- WH-02: Archive warehouse blocked if any `stock_balance` with (on_hand|damaged|expired|blocked) > 0, any `stock_allocation.qty_reserved` > 0, any open transfer/receipt/count/return (purchase return draft→shipped, sales return requested/approved), or any active reservation references it. Must empty + close first.
 - WH-03: Archive bin blocked if balance > 0 on it. Move stock first (transfer or adjustment with audit).
 - WH-04: Users restricted via `user_warehouses`. Every stock action validates `warehouse_id ∈ assigned` (or all-access role).
 - WH-05: Receiving defaults to receiving bin, then putaway moves to sellable bins (V1 may auto-putaway to default sellable with movement `putaway`; explicit putaway step is V1.5).

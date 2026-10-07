@@ -18,7 +18,7 @@ Putaway is recorded as TWO legs (`putaway_out` −bin A, `putaway_in` +bin B, sa
 | sale_fulfilment | Shipped to customer | −on_hand (picked bin) −reserved (position) | via sales return | never |
 | sale_return_quarantine | Received awaiting inspection | +blocked | via inspect (→restock/blocked_reject/disposal) | never |
 | sale_return_restock | Inspected OK | blocked→on_hand | via adjustment | never |
-| purchase_return | Shipped back to supplier | −on_hand | via new receipt | never |
+| purchase_return | Shipped back to supplier (carries `linked_receipt_id`; relieved at that receipt's cost, INV-022) | −on_hand, or −blocked/−damaged/−expired for rejected/excess/damaged units (doc 13 §5 PR-04) | via new receipt; supplier refusal → `blocked_in` | never |
 | transfer_out | Warehouse move, ship leg (source) | −on_hand; derived in-transit rises via `transfer_line.qty_shipped` | via reverse transfer | never |
 | transfer_in | Warehouse move, receive leg (dest) | +on_hand (or +damaged for damaged-in-transit); derived in-transit falls via `transfer_line.qty_received/qty_damaged` | via reverse transfer | never |
 | transfer_variance | Approved in-transit loss (missing units) | no bucket change (units already left source on ship); closes derived in-transit via `transfer_line.qty_missing`; relieves value at the ship snapshot | no (terminal loss) | never |

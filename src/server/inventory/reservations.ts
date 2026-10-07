@@ -1,4 +1,4 @@
-import type { InventoryMovement, Reservation, ReservationLine, SalesChannel } from "@/generated/prisma/client";
+import type { InventoryMovement, Reservation, ReservationLine, SalesChannel, SerialUnit } from "@/generated/prisma/client";
 import { assertTransactable } from "@/server/catalog/catalog";
 import { writeAudit } from "@/server/core/audit";
 import { requirePermission, type Ctx } from "@/server/core/ctx";
@@ -6,6 +6,7 @@ import { AppError } from "@/server/core/errors";
 import type { Tx } from "@/server/db";
 import { readSettings } from "@/server/settings/settings";
 import { dec, lockPositions, pickBins, postMovements, type Dec, type DecValue, type Leg } from "./post";
+import { perBin, takeSerials } from "./serials";
 
 // Reservations (doc 12). Lock order everywhere: reservation row → allocation rows → bin rows.
 
@@ -26,6 +27,7 @@ export type ReserveInput = {
   ttlSeconds?: number;
   externalOrderId?: string; // SO-07: groups reservations under one sales_order_ref
   channel?: SalesChannel; // ignored for API keys: ctx.salesChannel wins (SO-06)
+  serials?: string[]; // POS sale of serialized items: the units sold
 };
 
 export async function reserve(tx: Tx, ctx: Ctx, input: ReserveInput) {
@@ -45,6 +47,8 @@ export async function reserve(tx: Tx, ctx: Ctx, input: ReserveInput) {
   // INV-019, P-CAT-06/07/09
   if (warehouse.status !== "active") throw new AppError("archived_conflict", "Warehouse is not active");
   assertTransactable(variant);
+  const serialized = variant.product.isSerialized;
+  if (serialized && !qty.isInteger()) throw new AppError("validation_error", "Serialized items are reserved in whole units");
 
   // Candidate positions, FEFO (expiry ASC, then batch_no); expired batches are unreservable (B-04).
   let candidates: (string | null)[] = [null];
@@ -135,7 +139,7 @@ async function orderRef(tx: Tx, ctx: Ctx, channel: SalesChannel, externalOrderId
 export async function posSale(tx: Tx, ctx: Ctx, input: Omit<ReserveInput, "allowPartial" | "ttlSeconds">) {
   await requirePermission(ctx, "sales.fulfil", { warehouseId: input.warehouseId });
   const r = await reserve(tx, ctx, { ...input, allowPartial: false });
-  const f = await fulfil(tx, ctx, { reservationId: r.reservation.id, version: r.reservation.version });
+  const f = await fulfil(tx, ctx, { reservationId: r.reservation.id, version: r.reservation.version, serials: input.serials });
   return { reservation: f.reservation, movementIds: [...r.movementIds, ...f.movementIds], balances: f.balances, auditId: f.auditId };
 }
 
@@ -214,9 +218,10 @@ const remaining = (l: { qty: DecValue; qtyFulfilled: DecValue; qtyReleased: DecV
 export async function fulfil(
   tx: Tx,
   ctx: Ctx,
-  input: { reservationId: string; version: number; qty?: DecValue },
+  input: { reservationId: string; version: number; qty?: DecValue; serials?: string[] },
 ) {
   const r = await lockReservation(tx, ctx, input.reservationId, input.version, "sales.fulfil");
+  const variant = await tx.productVariant.findUniqueOrThrow({ where: { id: r.variantId }, include: { product: true } });
   if (r.expiresAt <= new Date()) throw new AppError("reservation_expired", "Reservation has expired", { id: r.id });
   const open = remaining(r);
   const qty = input.qty === undefined ? open : dec(input.qty);
@@ -234,19 +239,38 @@ export async function fulfil(
 
   const legs: Leg[] = [];
   const lineTake = new Map<string, Dec>();
-  let left = qty;
-  for (const line of lines) {
-    if (!left.gt(0)) break;
-    const n = Dec_min(remaining(line), left);
-    if (!n.gt(0)) continue;
-    lineTake.set(line.id, n);
-    left = left.minus(n);
-    for (const b of await pickBins(tx, ctx, { variantId: r.variantId, warehouseId: r.warehouseId, batchId: line.batchId, qty: n })) {
-      legs.push({
-        type: "sale_fulfilment", variantId: r.variantId, warehouseId: r.warehouseId, binId: b.binId,
-        batchId: line.batchId, delta: { onHand: b.qty.neg(), reserved: b.qty.neg() },
-        line: legs.length + 1, reasonCode: "fulfil",
-      });
+  const push = (line: { batchId: string | null }, binId: string, n: Dec, serialized?: true) =>
+    legs.push({
+      type: "sale_fulfilment", variantId: r.variantId, warehouseId: r.warehouseId, binId,
+      batchId: line.batchId, delta: { onHand: n.neg(), reserved: n.neg() },
+      line: legs.length + 1, reasonCode: "fulfil", ...(serialized ? { serialized } : {}),
+    });
+  let units: SerialUnit[] = [];
+  if (variant.product.isSerialized) {
+    // S-02: the shipped units are named; each must sit on an open line of its batch.
+    units = await takeSerials(tx, ctx, {
+      sku: variant.sku, variantId: r.variantId, warehouseId: r.warehouseId, batchId: undefined, qty, serials: input.serials, status: ["in_stock"],
+    });
+    for (const [batchId, group] of Map.groupBy(units, (u) => u.batchId)) {
+      let need = dec(group.length);
+      for (const line of lines.filter((l) => l.batchId === batchId)) {
+        const n = Dec_min(remaining(line).minus(lineTake.get(line.id) ?? 0), need);
+        if (n.gt(0)) lineTake.set(line.id, (lineTake.get(line.id) ?? dec(0)).plus(n));
+        need = need.minus(n);
+      }
+      if (need.gt(0)) throw new AppError("validation_error", `${variant.sku}: serial(s) are not from the reserved batch`, { field: "serials" });
+      for (const b of perBin(group)) push({ batchId }, b.binId, dec(b.qty), true);
+    }
+  } else {
+    if (input.serials?.length) throw new AppError("validation_error", `${variant.sku} is not serialized`, { field: "serials" });
+    let left = qty;
+    for (const line of lines) {
+      if (!left.gt(0)) break;
+      const n = Dec_min(remaining(line), left);
+      if (!n.gt(0)) continue;
+      lineTake.set(line.id, n);
+      left = left.minus(n);
+      for (const b of await pickBins(tx, ctx, { variantId: r.variantId, warehouseId: r.warehouseId, batchId: line.batchId, qty: n })) push(line, b.binId, b.qty);
     }
   }
 
@@ -257,6 +281,9 @@ export async function fulfil(
   for (const [id, n] of lineTake) {
     const l = r.lines.find((x) => x.id === id)!;
     await tx.reservationLine.update({ where: { id }, data: { qtyFulfilled: dec(l.qtyFulfilled).plus(n).toFixed(4) } });
+  }
+  if (units.length) {
+    await tx.serialUnit.updateMany({ where: { id: { in: units.map((u) => u.id) } }, data: { status: "sold", reservationId: r.id, version: { increment: 1 } } });
   }
   return finish(tx, ctx, r, { fulfilled: qty }, "fulfil", posted.movements);
 }

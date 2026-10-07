@@ -30,7 +30,8 @@ const SHAPES: Partial<Record<MovementType, { kind: Kind; signs: Partial<Record<B
   adjustment_in: { kind: "in", signs: { onHand: 1 } },
   blocked_in: { kind: "in", signs: { blocked: 1 } },
   sale_fulfilment: { kind: "out", signs: { onHand: -1, reserved: -1 } },
-  purchase_return: { kind: "out", signs: { onHand: -1 } },
+  // Rejected/excess/damaged units go back too (doc 13 §5 PR-04), not only sellable ones.
+  purchase_return: { kind: "out", signs: { onHand: -1, blocked: -1, damaged: -1, expired: -1 } },
   transfer_out: { kind: "out", signs: { onHand: -1 } },
   adjustment_out: { kind: "out", signs: { onHand: -1 } },
   disposal: { kind: "out", signs: { damaged: -1, expired: -1, blocked: -1 } },
@@ -66,6 +67,9 @@ export type Leg = {
   note?: string;
   reversesMovementId?: string; // mirror of that movement: same type/position, negated deltas (RC-08)
   serialized?: true; // caller keeps serial_unit in step in the same transaction (I-06)
+  linkedReceiptId?: string; // purchase_return: relieved at `unitCost` = that receipt's cost (INV-022)
+  linkedFulfilmentRef?: string; // sale_return_quarantine: the fulfilment movement returned against
+  lotId?: string; // −blocked legs: consume exactly this quarantine lot (else FIFO at the bin row)
 };
 
 // postedAt: backdated created_at — opening_balance legs only (MV-04; a DB trigger backs it up).
@@ -166,6 +170,10 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
         if (unitCost == null || unitCost.lt(0)) throw new AppError("validation_error", `${l.type} needs a unit cost ≥ 0`);
         valueDelta = l.value != null ? dec(l.value) : qty.times(unitCost).toDecimalPlaces(4);
         if (valueDelta.lt(0)) throw new AppError("validation_error", "Leg value must be ≥ 0");
+      } else if (shape.kind === "out" && l.linkedReceiptId) {
+        // INV-022: relieve the linked receipt's cost, never more than the value left.
+        unitCost = dec(l.unitCost!);
+        valueDelta = c.qty.plus(qty).isZero() ? c.value.neg() : Dec.max(qty.times(unitCost).toDecimalPlaces(4), c.value.neg());
       } else if (shape.kind === "out") {
         unitCost = wac;
         // Last units out take the remaining value exactly, so value hits 0 with qty.
@@ -193,6 +201,7 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
       unitCost: unitCost ? s(unitCost) : null, valueDelta: s(valueDelta),
       sourceType: input.sourceType, sourceId: input.sourceId,
       reversesMovementId: l.reversesMovementId ?? null, reasonCode: l.reasonCode, note: l.note ?? null,
+      linkedReceiptId: l.linkedReceiptId ?? null, linkedFulfilmentRef: l.linkedFulfilmentRef ?? null,
       actorId: ctx.userId, channel: ctx.channel ?? null, idempotencyKey: l.key,
       ...(input.postedAt ? { createdAt: input.postedAt } : {}),
     });
@@ -238,6 +247,7 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
     }
     throw e;
   }
+  await syncLots(tx, ctx, input, legs, movements);
   const audit = await writeAudit(tx, ctx, {
     action: input.action ?? "post",
     entityType: input.sourceType,
@@ -253,6 +263,45 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
 }
 
 const s = (d: Dec) => d.toFixed(4);
+
+// Quarantine lots (doc 25 Inspection): +blocked opens a lot, −blocked consumes lots of
+// the same bin row — the named lot, else the lot this leg reverses, else oldest first.
+// Runs under the bin row locks taken above, so lots can't drift from stock_balance.blocked.
+async function syncLots(tx: Tx, ctx: Ctx, input: PostInput, legs: Norm[], movements: InventoryMovement[]) {
+  const byKey = new Map(movements.map((m) => [m.idempotencyKey, m]));
+  for (const l of legs) {
+    const m = byKey.get(l.key)!;
+    if (l.d.blocked.gt(0)) {
+      await tx.quarantineLot.create({
+        data: {
+          companyId: ctx.companyId, variantId: l.variantId, warehouseId: l.warehouseId, binId: l.binId!, batchId: l.batchId,
+          reason: l.reasonCode, sourceType: input.sourceType, sourceId: input.sourceId, sourceLine: String(l.line),
+          movementId: m.id, unitCost: m.unitCost, qty: s(l.d.blocked), qtyOpen: s(l.d.blocked), createdBy: ctx.userId,
+        },
+      });
+    } else if (l.d.blocked.lt(0)) {
+      const lots = await tx.$queryRaw<{ id: string; qty_open: unknown }[]>`
+        SELECT q.id, q.qty_open FROM quarantine_lot q
+        WHERE q.company_id = ${ctx.companyId} AND q.variant_id = ${l.variantId} AND q.warehouse_id = ${l.warehouseId}
+          AND q.bin_id = ${l.binId} AND q.batch_id IS NOT DISTINCT FROM ${l.batchId} AND q.qty_open > 0
+          AND (${l.lotId ?? null}::text IS NULL OR q.id = ${l.lotId ?? null})
+        ORDER BY (q.movement_id IS NOT DISTINCT FROM ${l.reversesMovementId ?? null}) DESC, q.created_at, q.id
+        FOR UPDATE OF q`;
+      let left = l.d.blocked.neg();
+      for (const lot of lots) {
+        if (!left.gt(0)) break;
+        const take = Dec.min(dec(lot.qty_open as string), left);
+        await tx.quarantineLot.update({ where: { id: lot.id }, data: { qtyOpen: { decrement: s(take) } } });
+        left = left.minus(take);
+      }
+      if (left.gt(0)) {
+        throw new AppError(l.lotId ? "insufficient_stock" : "conflict", l.lotId ? "Not that much left open in this quarantine lot" : "Quarantine lots out of step with blocked stock", {
+          lotId: l.lotId ?? null, binId: l.binId, requested: l.d.blocked.neg().toString(), missing: left.toString(),
+        });
+      }
+    }
+  }
+}
 
 // Putaway legs must net to zero per position inside one posting, so valued qty never
 // dips between the two legs.
@@ -292,6 +341,10 @@ function normalize(ctx: Ctx, input: PostInput, l: Leg): Norm {
     return { ...l, d, binId: null, batchId: l.batchId ?? null, key: legKey(input.sourceType, input.sourceId, l) };
   }
   if (Object.values(d).every((x) => x.isZero())) throw new AppError("validation_error", "Zero-quantity leg");
+  if (!!l.linkedReceiptId !== (l.type === "purchase_return") || (l.linkedReceiptId && (l.unitCost == null || dec(l.unitCost).lt(0)))) {
+    throw new AppError("validation_error", "A purchase return names its linked receipt and that receipt's unit cost (INV-022)");
+  }
+  if (l.linkedFulfilmentRef && l.type !== "sale_return_quarantine") throw new AppError("validation_error", "Only a sales return links a fulfilment");
   if (shape.move && !PHYSICAL.reduce((t, k) => t.plus(d[k]), ZERO).isZero()) {
     throw new AppError("validation_error", `${l.type} must move equal quantities between buckets`);
   }
@@ -337,9 +390,10 @@ async function validateRefs(tx: Tx, ctx: Ctx, legs: Norm[]) {
     if (v.product.requiresBatch !== !!l.batchId) {
       throw new AppError("validation_error", v.product.requiresBatch ? "Batch required for this product" : "Product is not batch-tracked");
     }
-    // ponytail: only callers that maintain serial_unit (receipts, Part 4) may move serialized
-    // stock; reserve/fulfil/transfer/count gain serial handling in Parts 5–8.
-    if (v.product.isSerialized && !l.serialized) throw new AppError("validation_error", "Serialized products need serial capture for this operation (not supported yet)");
+    // Only callers that keep serial_unit in step (receipts, reserve/fulfil, transfers,
+    // damage/repair/disposal, returns, inspection) may move serialized stock; counts → Part 8.
+    // Reservation legs touch no unit (units are named at fulfil, S-02).
+    if (v.product.isSerialized && l.binId && !l.serialized) throw new AppError("validation_error", "Serialized products need serial capture for this operation (not supported yet)");
   }
 }
 
