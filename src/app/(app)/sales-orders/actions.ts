@@ -8,6 +8,8 @@ import type { Ctx } from "@/server/core/ctx";
 import type { Tx } from "@/server/db";
 import { cancel, cancelOrder, extend, fulfil, posSale, reserve } from "@/server/inventory/reservations";
 
+const serials = (f: FormData) => (str(f, "serials") ?? "").split(/[\s,]+/).filter(Boolean); // serialized items (S-02)
+
 // New reservation, or (sell now) a POS immediate sale. `key` is rendered into the form,
 // so a double submit replays instead of reserving twice.
 export async function reserveAction(key: string, _: ActionState, f: FormData): Promise<ActionState> {
@@ -15,14 +17,14 @@ export async function reserveAction(key: string, _: ActionState, f: FormData): P
   return runAction(sellNow ? "pos_sales.create" : "reservations.create", async (tx, ctx) => {
     const input = {
       variantId: await variantByCode(ctx, str(f, "sku") ?? ""), warehouseId: str(f, "warehouseId") ?? "", qty: str(f, "qty") ?? "0",
-      externalOrderId: str(f, "externalOrderId"), channel: (str(f, "channel") ?? "pos") as SalesChannel,
+      externalOrderId: str(f, "externalOrderId"), channel: (str(f, "channel") ?? "pos") as SalesChannel, serials: serials(f),
     };
     return sellNow ? posSale(tx, ctx, input) : reserve(tx, ctx, { ...input, allowPartial: bool(f, "allowPartial") });
   }, sellNow ? "Sold" : "Reserved", undefined, key);
 }
 
 const MOVES = {
-  fulfil: (tx, ctx, id, f) => fulfil(tx, ctx, { reservationId: id, version: version(f), qty: str(f, "qty") }),
+  fulfil: (tx, ctx, id, f) => fulfil(tx, ctx, { reservationId: id, version: version(f), qty: str(f, "qty"), serials: serials(f) }),
   cancel: (tx, ctx, id, f) => cancel(tx, ctx, { reservationId: id, version: version(f), reason: str(f, "reason") }),
   extend: (tx, ctx, id, f) => extend(tx, ctx, { reservationId: id, version: version(f) }),
 } satisfies Record<string, (tx: Tx, ctx: Ctx, id: string, f: FormData) => Promise<unknown>>;

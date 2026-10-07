@@ -104,7 +104,9 @@ describe("movement types (doc 08 §3)", () => {
     const main2 = wh2.bins.find((b) => b.code === "MAIN")!.id;
     const inn = await post([{ type: "transfer_in", warehouseId: wh2.id, binId: main2, delta: { onHand: 3 }, unitCost: snap.toString() }]);
     expect(inn.movements[0].unitCost?.toString()).toBe(snap.toString());
-    await post([{ type: "purchase_return", binId: bin.MAIN, delta: { onHand: -1 } }]);
+    // INV-022: a purchase return always names its linked receipt (+ cost) — see returns.test.ts.
+    await expect(post([{ type: "purchase_return", binId: bin.MAIN, delta: { onHand: -1 } }])).rejects.toMatchObject({ code: "validation_error" });
+    await post([{ type: "adjustment_out", binId: bin.MAIN, delta: { onHand: -1 } }]);
     expect((await bal("MAIN")).onHand.toString()).toBe("13");
   });
 

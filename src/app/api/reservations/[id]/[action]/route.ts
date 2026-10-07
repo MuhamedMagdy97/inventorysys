@@ -9,6 +9,7 @@ const Body = z.object({
   version: z.number().int().min(0),
   qty: zQty.optional(), // fulfil/release: defaults to the whole open quantity
   reason: z.string().max(200).optional(),
+  serials: z.array(z.string().max(100)).max(10000).optional(), // fulfil of serialized items: the units shipped (S-02)
 });
 const actions = { fulfil, release, cancel, extend } as const;
 

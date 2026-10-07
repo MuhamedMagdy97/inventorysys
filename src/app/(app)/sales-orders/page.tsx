@@ -93,6 +93,7 @@ export default async function SalesOrdersPage({ searchParams }: PageProps<"/sale
               </label>
               <label className="label">Qty<input name="qty" type="number" min="0.0001" step="any" required className="input" /></label>
               <label className="label">Order number<input name="externalOrderId" maxLength={100} className="input" /></label>
+              <label className="label">Serials (sell now)<input name="serials" className="input" /></label>
               <label className="label">
                 Channel
                 <select name="channel" defaultValue="pos" className="input">
@@ -151,6 +152,7 @@ export default async function SalesOrdersPage({ searchParams }: PageProps<"/sale
                         {can("sales.fulfil") && (
                           <ActionForm action={reservationAction.bind(null, r.id, "fulfil")} submit="Ship" className="flex items-center gap-1">
                             {v}<input name="qty" type="number" min="0.0001" step="any" placeholder="all" aria-label="Quantity to ship" className="input w-20" />
+                            <input name="serials" placeholder="serials" aria-label="Serial numbers shipped" className="input w-28" />
                           </ActionForm>
                         )}
                         {can("sales.cancel") && <ActionForm action={reservationAction.bind(null, r.id, "cancel")} submit="Cancel" className="flex gap-1">{v}</ActionForm>}

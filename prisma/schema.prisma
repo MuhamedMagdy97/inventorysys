@@ -51,6 +51,11 @@ model Company {
   approvals          Approval[]
   stockCounts        StockCount[]
   importJobs         ImportJob[]
+  purchaseReturns    PurchaseReturn[]
+  salesReturns       SalesReturn[]
+  quarantineLots     QuarantineLot[]
+  inspections        Inspection[]
+  evidence           Evidence[]
 
   @@map("company")
 }
@@ -89,6 +94,10 @@ model User {
   approvals          Approval[]        @relation("Approver")
   createdCounts      StockCount[]      @relation("CountCreator")
   imports            ImportJob[]       @relation("ImportCreator")
+  purchaseReturns    PurchaseReturn[]  @relation("PurchaseReturnCreator")
+  salesReturns       SalesReturn[]     @relation("SalesReturnCreator")
+  inspections        Inspection[]      @relation("Inspector")
+  evidence           Evidence[]        @relation("EvidenceUploader")
 
   @@unique([companyId, id])
   @@index([companyId])
@@ -158,6 +167,10 @@ model Warehouse {
   transfersIn        Transfer[]                 @relation("TransferTo")
   stockAdjustments   StockAdjustment[]
   stockCounts        StockCount[]
+  purchaseReturns    PurchaseReturn[]
+  salesReturns       SalesReturn[]
+  quarantineLots     QuarantineLot[]
+  evidence           Evidence[]
 
   @@unique([companyId, code])
   @@unique([companyId, id])
@@ -189,6 +202,7 @@ model Bin {
   adjustmentLines    StockAdjustmentLine[]
   countLines         StockCountLine[]
   scopedCounts       StockCount[]          @relation("CountScopeBin")
+  quarantineLots     QuarantineLot[]
 
   @@unique([warehouseId, code])
   @@map("bin")
@@ -256,25 +270,28 @@ model ProductVariant {
   createdAt          DateTime      @default(now()) @map("created_at")
   updatedAt          DateTime      @default(now()) @updatedAt @map("updated_at")
 
-  company            Company                    @relation(fields: [companyId], references: [id])
-  product            Product                    @relation(fields: [productId], references: [id])
-  skuAliases         SkuAlias[]
-  barcodeAliases     BarcodeAlias[]
-  images             ProductImage[]
-  warehouseSettings  VariantWarehouseSettings[]
-  supplierProducts   SupplierProduct[]
-  batches            Batch[]
-  stockBalances      StockBalance[]
-  stockAllocations   StockAllocation[]
-  variantCosts       VariantCost[]
-  inventoryMovements InventoryMovement[]
-  reservations       Reservation[]
-  poLines            PoLine[]
-  receiptLines       ReceiptLine[]
-  serialUnits        SerialUnit[]
-  transferLines      TransferLine[]
-  adjustmentLines    StockAdjustmentLine[]
-  countLines         StockCountLine[]
+  company             Company                    @relation(fields: [companyId], references: [id])
+  product             Product                    @relation(fields: [productId], references: [id])
+  skuAliases          SkuAlias[]
+  barcodeAliases      BarcodeAlias[]
+  images              ProductImage[]
+  warehouseSettings   VariantWarehouseSettings[]
+  supplierProducts    SupplierProduct[]
+  batches             Batch[]
+  stockBalances       StockBalance[]
+  stockAllocations    StockAllocation[]
+  variantCosts        VariantCost[]
+  inventoryMovements  InventoryMovement[]
+  reservations        Reservation[]
+  poLines             PoLine[]
+  receiptLines        ReceiptLine[]
+  serialUnits         SerialUnit[]
+  transferLines       TransferLine[]
+  adjustmentLines     StockAdjustmentLine[]
+  purchaseReturnLines PurchaseReturnLine[]
+  salesReturnLines    SalesReturnLine[]
+  quarantineLots      QuarantineLot[]
+  countLines          StockCountLine[]
 
   @@unique([companyId, sku])
   @@unique([companyId, barcode])
@@ -290,17 +307,20 @@ model Batch {
   expiryDate DateTime? @map("expiry_date") @db.Date
   createdAt  DateTime  @default(now()) @map("created_at")
 
-  company            Company               @relation(fields: [companyId], references: [id])
-  variant            ProductVariant        @relation(fields: [variantId], references: [id])
-  stockBalances      StockBalance[]
-  stockAllocations   StockAllocation[]
-  inventoryMovements InventoryMovement[]
-  reservationLines   ReservationLine[]
-  receiptLines       ReceiptLine[]
-  serialUnits        SerialUnit[]
-  transferLines      TransferLine[]
-  adjustmentLines    StockAdjustmentLine[]
-  countLines         StockCountLine[]
+  company             Company               @relation(fields: [companyId], references: [id])
+  variant             ProductVariant        @relation(fields: [variantId], references: [id])
+  stockBalances       StockBalance[]
+  stockAllocations    StockAllocation[]
+  inventoryMovements  InventoryMovement[]
+  reservationLines    ReservationLine[]
+  receiptLines        ReceiptLine[]
+  serialUnits         SerialUnit[]
+  transferLines       TransferLine[]
+  adjustmentLines     StockAdjustmentLine[]
+  purchaseReturnLines PurchaseReturnLine[]
+  salesReturnLines    SalesReturnLine[]
+  quarantineLots      QuarantineLot[]
+  countLines          StockCountLine[]
 
   @@unique([variantId, batchNo])
   @@map("batch")
@@ -408,42 +428,49 @@ enum MovementType {
 
 // Append-only ledger (doc 08). Signed per-bucket deltas make replay a plain SUM.
 model InventoryMovement {
-  id                 String       @id @default(uuid(7))
-  companyId          String       @map("company_id")
-  variantId          String       @map("variant_id")
-  warehouseId        String       @map("warehouse_id")
-  binId              String?      @map("bin_id")
-  batchId            String?      @map("batch_id")
-  type               MovementType
-  dOnHand            Decimal      @default(0) @map("d_on_hand") @db.Decimal(18, 4)
-  dBlocked           Decimal      @default(0) @map("d_blocked") @db.Decimal(18, 4)
-  dDamaged           Decimal      @default(0) @map("d_damaged") @db.Decimal(18, 4)
-  dExpired           Decimal      @default(0) @map("d_expired") @db.Decimal(18, 4)
-  dReserved          Decimal      @default(0) @map("d_reserved") @db.Decimal(18, 4)
-  onHandAfter        Decimal?     @map("on_hand_after") @db.Decimal(18, 4)
-  blockedAfter       Decimal?     @map("blocked_after") @db.Decimal(18, 4)
-  damagedAfter       Decimal?     @map("damaged_after") @db.Decimal(18, 4)
-  expiredAfter       Decimal?     @map("expired_after") @db.Decimal(18, 4)
-  reservedAfter      Decimal      @map("reserved_after") @db.Decimal(18, 4)
-  unitCost           Decimal?     @map("unit_cost_snapshot") @db.Decimal(18, 4)
-  valueDelta         Decimal      @default(0) @map("value_delta") @db.Decimal(18, 4)
-  sourceType         String       @map("source_type")
-  sourceId           String       @map("source_id")
-  reversesMovementId String?      @map("reverses_movement_id")
-  reasonCode         String       @map("reason_code")
-  note               String?
-  actorId            String       @map("actor_id")
-  channel            String?
-  idempotencyKey     String       @map("idempotency_key")
-  createdAt          DateTime     @default(now()) @map("created_at")
+  id                  String       @id @default(uuid(7))
+  companyId           String       @map("company_id")
+  variantId           String       @map("variant_id")
+  warehouseId         String       @map("warehouse_id")
+  binId               String?      @map("bin_id")
+  batchId             String?      @map("batch_id")
+  type                MovementType
+  dOnHand             Decimal      @default(0) @map("d_on_hand") @db.Decimal(18, 4)
+  dBlocked            Decimal      @default(0) @map("d_blocked") @db.Decimal(18, 4)
+  dDamaged            Decimal      @default(0) @map("d_damaged") @db.Decimal(18, 4)
+  dExpired            Decimal      @default(0) @map("d_expired") @db.Decimal(18, 4)
+  dReserved           Decimal      @default(0) @map("d_reserved") @db.Decimal(18, 4)
+  onHandAfter         Decimal?     @map("on_hand_after") @db.Decimal(18, 4)
+  blockedAfter        Decimal?     @map("blocked_after") @db.Decimal(18, 4)
+  damagedAfter        Decimal?     @map("damaged_after") @db.Decimal(18, 4)
+  expiredAfter        Decimal?     @map("expired_after") @db.Decimal(18, 4)
+  reservedAfter       Decimal      @map("reserved_after") @db.Decimal(18, 4)
+  unitCost            Decimal?     @map("unit_cost_snapshot") @db.Decimal(18, 4)
+  valueDelta          Decimal      @default(0) @map("value_delta") @db.Decimal(18, 4)
+  sourceType          String       @map("source_type")
+  sourceId            String       @map("source_id")
+  reversesMovementId  String?      @map("reverses_movement_id")
+  linkedReceiptId     String?      @map("linked_receipt_id") // purchase_return: whose cost is relieved (INV-022)
+  linkedFulfilmentRef String?      @map("linked_fulfilment_ref") // sale_return_quarantine: the fulfilment movement
+  reasonCode          String       @map("reason_code")
+  note                String?
+  actorId             String       @map("actor_id")
+  channel             String?
+  idempotencyKey      String       @map("idempotency_key")
+  createdAt           DateTime     @default(now()) @map("created_at")
 
-  company   Company             @relation(fields: [companyId], references: [id])
-  variant   ProductVariant      @relation(fields: [variantId], references: [id])
-  warehouse Warehouse           @relation(fields: [warehouseId], references: [id])
-  bin       Bin?                @relation(fields: [binId], references: [id])
-  batch     Batch?              @relation(fields: [batchId], references: [id])
-  reverses  InventoryMovement?  @relation("Reversal", fields: [reversesMovementId], references: [id])
-  reversals InventoryMovement[] @relation("Reversal")
+  company          Company             @relation(fields: [companyId], references: [id])
+  variant          ProductVariant      @relation(fields: [variantId], references: [id])
+  warehouse        Warehouse           @relation(fields: [warehouseId], references: [id])
+  bin              Bin?                @relation(fields: [binId], references: [id])
+  batch            Batch?              @relation(fields: [batchId], references: [id])
+  reverses         InventoryMovement?  @relation("Reversal", fields: [reversesMovementId], references: [id])
+  reversals        InventoryMovement[] @relation("Reversal")
+  linkedReceipt    GoodsReceipt?       @relation(fields: [linkedReceiptId], references: [id])
+  linkedFulfilment InventoryMovement?  @relation("FulfilmentLink", fields: [linkedFulfilmentRef], references: [id])
+  returnsOf        InventoryMovement[] @relation("FulfilmentLink")
+  salesReturnLines SalesReturnLine[]   @relation("SalesReturnFulfilment")
+  quarantineLot    QuarantineLot?      @relation("LotOpening")
 
   @@unique([companyId, idempotencyKey])
   @@index([companyId, variantId, warehouseId, createdAt])
@@ -531,11 +558,12 @@ model Reservation {
   createdAt       DateTime          @default(now()) @map("created_at")
   updatedAt       DateTime          @default(now()) @updatedAt @map("updated_at")
 
-  company   Company           @relation(fields: [companyId], references: [id])
-  variant   ProductVariant    @relation(fields: [variantId], references: [id])
-  warehouse Warehouse         @relation(fields: [warehouseId], references: [id])
-  order     SalesOrderRef?    @relation(fields: [companyId, salesOrderRefId], references: [companyId, id])
-  lines     ReservationLine[]
+  company          Company           @relation(fields: [companyId], references: [id])
+  variant          ProductVariant    @relation(fields: [variantId], references: [id])
+  warehouse        Warehouse         @relation(fields: [warehouseId], references: [id])
+  order            SalesOrderRef?    @relation(fields: [companyId, salesOrderRefId], references: [companyId, id])
+  lines            ReservationLine[]
+  salesReturnLines SalesReturnLine[]
 
   @@index([companyId, status, expiresAt])
   @@index([salesOrderRefId])
@@ -918,12 +946,13 @@ model Supplier {
   createdAt           DateTime     @default(now()) @map("created_at")
   updatedAt           DateTime     @default(now()) @updatedAt @map("updated_at")
 
-  company        Company            @relation(fields: [companyId], references: [id])
-  contacts       SupplierContact[]
-  addresses      SupplierAddress[]
-  products       SupplierProduct[]
-  documents      SupplierDocument[]
-  purchaseOrders PurchaseOrder[]
+  company         Company            @relation(fields: [companyId], references: [id])
+  contacts        SupplierContact[]
+  addresses       SupplierAddress[]
+  products        SupplierProduct[]
+  documents       SupplierDocument[]
+  purchaseOrders  PurchaseOrder[]
+  purchaseReturns PurchaseReturn[]
 
   @@unique([companyId, code])
   @@map("supplier")
@@ -1037,12 +1066,13 @@ model PurchaseOrder {
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
 
-  supplier  Supplier       @relation(fields: [supplierId], references: [id])
-  warehouse Warehouse      @relation(fields: [warehouseId], references: [id])
-  creator   User           @relation("PoCreator", fields: [createdBy], references: [id])
-  lines     PoLine[]
-  approvals PoApproval[]
-  receipts  GoodsReceipt[]
+  supplier        Supplier         @relation(fields: [supplierId], references: [id])
+  warehouse       Warehouse        @relation(fields: [warehouseId], references: [id])
+  creator         User             @relation("PoCreator", fields: [createdBy], references: [id])
+  lines           PoLine[]
+  approvals       PoApproval[]
+  receipts        GoodsReceipt[]
+  purchaseReturns PurchaseReturn[]
 
   @@unique([companyId, number])
   @@index([companyId, status])
@@ -1119,12 +1149,13 @@ model GoodsReceipt {
   reversalOfReceiptId String?  @unique @map("reversal_of_receipt_id") // RC-08: one reversal per receipt
   idempotencyKey      String?  @map("idempotency_key")
 
-  po         PurchaseOrder @relation(fields: [poId], references: [id])
-  warehouse  Warehouse     @relation(fields: [warehouseId], references: [id])
-  receiver   User          @relation("ReceiptReceiver", fields: [receivedBy], references: [id])
-  reversalOf GoodsReceipt? @relation("ReceiptReversal", fields: [reversalOfReceiptId], references: [id])
-  reversal   GoodsReceipt? @relation("ReceiptReversal")
-  lines      ReceiptLine[]
+  po                 PurchaseOrder       @relation(fields: [poId], references: [id])
+  warehouse          Warehouse           @relation(fields: [warehouseId], references: [id])
+  receiver           User                @relation("ReceiptReceiver", fields: [receivedBy], references: [id])
+  reversalOf         GoodsReceipt?       @relation("ReceiptReversal", fields: [reversalOfReceiptId], references: [id])
+  reversal           GoodsReceipt?       @relation("ReceiptReversal")
+  lines              ReceiptLine[]
+  inventoryMovements InventoryMovement[]
 
   @@unique([companyId, number])
   @@index([poId])
@@ -1159,12 +1190,13 @@ model ReceiptLine {
   excessDecidedAt  DateTime?     @map("excess_decided_at")
   excessComment    String?       @map("excess_comment")
 
-  receipt GoodsReceipt   @relation(fields: [receiptId], references: [id])
-  poLine  PoLine?        @relation(fields: [poLineId], references: [id])
-  variant ProductVariant @relation(fields: [variantId], references: [id])
-  batch   Batch?         @relation(fields: [batchId], references: [id])
-  bin     Bin            @relation(fields: [binId], references: [id])
-  serials SerialUnit[]
+  receipt             GoodsReceipt         @relation(fields: [receiptId], references: [id])
+  poLine              PoLine?              @relation(fields: [poLineId], references: [id])
+  variant             ProductVariant       @relation(fields: [variantId], references: [id])
+  batch               Batch?               @relation(fields: [batchId], references: [id])
+  bin                 Bin                  @relation(fields: [binId], references: [id])
+  serials             SerialUnit[]
+  purchaseReturnLines PurchaseReturnLine[]
 
   @@unique([receiptId, lineNo])
   @@index([poLineId])
@@ -1183,6 +1215,7 @@ enum SerialStatus {
   returned_pending
   lost // missing in transit (approved transfer_variance)
   reversed
+  returned // back with the supplier (purchase return confirmed); the number may be received again
 
   @@map("serial_status")
 }
@@ -1200,6 +1233,7 @@ model SerialUnit {
   binId          String?      @map("bin_id")
   receiptLineId  String?      @map("receipt_line_id")
   transferLineId String?      @map("transfer_line_id") // last transfer that moved it
+  reservationId  String?      @map("reservation_id") // the reservation that sold it (sales returns, SR-01)
   version        Int          @default(0)
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
@@ -1551,4 +1585,238 @@ model ImportJob {
 
   @@index([companyId, createdAt])
   @@map("import_job")
+}
+
+// ───────────────────────── Part 7: returns + inspection ─────────────────────────
+// Docs 13, 08, 14 §3, 25 (Inspection). Build decisions: doc 13 §5.
+
+enum PurchaseReturnStatus {
+  draft
+  submitted
+  approved
+  shipped
+  supplier_confirmed
+  supplier_rejected
+  closed
+  cancelled
+
+  @@map("purchase_return_status")
+}
+
+model PurchaseReturn {
+  id            String               @id @default(uuid(7))
+  companyId     String               @map("company_id")
+  number        String // PR-YYYY-00001
+  poId          String               @map("po_id")
+  supplierId    String               @map("supplier_id")
+  warehouseId   String               @map("warehouse_id") // = the PO's receiving warehouse
+  status        PurchaseReturnStatus @default(draft)
+  reasonCode    String               @map("reason_code")
+  note          String?
+  creditNoteRef String?              @map("credit_note_ref") // V1: text only (doc 13 §1)
+  createdBy     String               @map("created_by")
+  approvedBy    String?              @map("approved_by")
+  approvedAt    DateTime?            @map("approved_at")
+  shippedBy     String?              @map("shipped_by")
+  shippedAt     DateTime?            @map("shipped_at")
+  closedAt      DateTime?            @map("closed_at")
+  version       Int                  @default(0)
+  createdAt     DateTime             @default(now()) @map("created_at")
+  updatedAt     DateTime             @default(now()) @updatedAt @map("updated_at")
+
+  company   Company              @relation(fields: [companyId], references: [id])
+  po        PurchaseOrder        @relation(fields: [poId], references: [id])
+  supplier  Supplier             @relation(fields: [supplierId], references: [id])
+  warehouse Warehouse            @relation(fields: [warehouseId], references: [id])
+  creator   User                 @relation("PurchaseReturnCreator", fields: [createdBy], references: [id])
+  lines     PurchaseReturnLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@index([poId])
+  @@map("purchase_return")
+}
+
+// One line per linked receipt lot (INV-022): a requested qty spanning receipts is split
+// oldest-receipt-first at create; the shipper may re-point a line at ship (edge #35).
+model PurchaseReturnLine {
+  id            String   @id @default(uuid(7))
+  returnId      String   @map("return_id")
+  lineNo        Int      @map("line_no")
+  receiptLineId String   @map("receipt_line_id")
+  receiptId     String   @map("receipt_id") // = movement.linked_receipt_id
+  poLineId      String?  @map("po_line_id")
+  variantId     String   @map("variant_id")
+  batchId       String?  @map("batch_id")
+  bucket        String   @default("onHand") // onHand | blocked | damaged | expired
+  qty           Decimal  @db.Decimal(18, 4) // base units; shipped = confirmed = qty
+  unitCost      Decimal  @map("unit_cost") @db.Decimal(18, 4) // the linked receipt's base unit cost
+  serials       String[]
+
+  purchaseReturn PurchaseReturn @relation(fields: [returnId], references: [id])
+  receiptLine    ReceiptLine    @relation(fields: [receiptLineId], references: [id])
+  variant        ProductVariant @relation(fields: [variantId], references: [id])
+  batch          Batch?         @relation(fields: [batchId], references: [id])
+
+  @@unique([returnId, lineNo])
+  @@index([receiptLineId])
+  @@map("purchase_return_line")
+}
+
+enum SalesReturnStatus {
+  requested
+  approved
+  received
+  inspected
+  restocked
+  written_off
+  rejected
+  cancelled
+
+  @@map("sales_return_status")
+}
+
+model SalesReturn {
+  id              String            @id @default(uuid(7))
+  companyId       String            @map("company_id")
+  number          String // SR-YYYY-00001
+  warehouseId     String            @map("warehouse_id") // where the fulfilments shipped from
+  salesOrderRefId String?           @map("sales_order_ref_id")
+  status          SalesReturnStatus @default(requested)
+  reasonCode      String            @map("reason_code")
+  note            String?
+  createdBy       String            @map("created_by")
+  approvedBy      String?           @map("approved_by")
+  approvedAt      DateTime?         @map("approved_at")
+  receivedBy      String?           @map("received_by")
+  receivedAt      DateTime?         @map("received_at")
+  closedAt        DateTime?         @map("closed_at")
+  version         Int               @default(0)
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @default(now()) @updatedAt @map("updated_at")
+
+  company   Company           @relation(fields: [companyId], references: [id])
+  warehouse Warehouse         @relation(fields: [warehouseId], references: [id])
+  creator   User              @relation("SalesReturnCreator", fields: [createdBy], references: [id])
+  lines     SalesReturnLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@map("sales_return")
+}
+
+// One line per fulfilment movement returned against (SR-01 per order line = reservation).
+model SalesReturnLine {
+  id                   String   @id @default(uuid(7))
+  returnId             String   @map("return_id")
+  lineNo               Int      @map("line_no")
+  reservationId        String   @map("reservation_id")
+  fulfilmentMovementId String   @map("fulfilment_movement_id") // = movement.linked_fulfilment_ref
+  variantId            String   @map("variant_id")
+  batchId              String?  @map("batch_id") // fulfilled batch; from receipt on, the SR-03 batch held
+  qty                  Decimal  @db.Decimal(18, 4)
+  qtyReceived          Decimal  @default(0) @map("qty_received") @db.Decimal(18, 4)
+  qtyRestocked         Decimal  @default(0) @map("qty_restocked") @db.Decimal(18, 4)
+  qtyRejected          Decimal  @default(0) @map("qty_rejected") @db.Decimal(18, 4)
+  qtyDisposed          Decimal  @default(0) @map("qty_disposed") @db.Decimal(18, 4)
+  unitCost             Decimal  @map("unit_cost") @db.Decimal(18, 4) // WAC at fulfil (INV-022)
+  serials              String[]
+  lotId                String?  @unique @map("lot_id")
+
+  salesReturn SalesReturn       @relation(fields: [returnId], references: [id])
+  reservation Reservation       @relation(fields: [reservationId], references: [id])
+  fulfilment  InventoryMovement @relation("SalesReturnFulfilment", fields: [fulfilmentMovementId], references: [id])
+  variant     ProductVariant    @relation(fields: [variantId], references: [id])
+  batch       Batch?            @relation(fields: [batchId], references: [id])
+  lot         QuarantineLot?    @relation(fields: [lotId], references: [id])
+
+  @@unique([returnId, lineNo])
+  @@index([reservationId])
+  @@index([fulfilmentMovementId])
+  @@map("sales_return_line")
+}
+
+// Blocked stock by origin (doc 25 "quarantine list by reason"). Written only by
+// postMovements: every +blocked leg opens a lot, every −blocked leg consumes lots of the
+// same bin row, so SUM(qty_open) per bin row = stock_balance.blocked (reconciler check).
+model QuarantineLot {
+  id          String   @id @default(uuid(7))
+  companyId   String   @map("company_id")
+  variantId   String   @map("variant_id")
+  warehouseId String   @map("warehouse_id")
+  binId       String   @map("bin_id")
+  batchId     String?  @map("batch_id")
+  reason      String // opening leg's reason code: sale_return | inspection | excess | wrong_product | supplier_rejected | …
+  sourceType  String   @map("source_type")
+  sourceId    String   @map("source_id")
+  sourceLine  String   @map("source_line")
+  movementId  String?  @unique @map("movement_id") // null only for the pre-Part-7 backfill
+  unitCost    Decimal? @map("unit_cost") @db.Decimal(18, 4)
+  qty         Decimal  @db.Decimal(18, 4)
+  qtyOpen     Decimal  @map("qty_open") @db.Decimal(18, 4)
+  createdBy   String   @map("created_by") // the receiver (SR-02)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  company         Company            @relation(fields: [companyId], references: [id])
+  variant         ProductVariant     @relation(fields: [variantId], references: [id])
+  warehouse       Warehouse          @relation(fields: [warehouseId], references: [id])
+  bin             Bin                @relation(fields: [binId], references: [id])
+  batch           Batch?             @relation(fields: [batchId], references: [id])
+  movement        InventoryMovement? @relation("LotOpening", fields: [movementId], references: [id])
+  inspections     Inspection[]
+  salesReturnLine SalesReturnLine?
+
+  @@index([companyId, variantId, warehouseId, binId])
+  @@index([companyId, warehouseId, reason])
+  @@index([sourceType, sourceId])
+  @@map("quarantine_lot")
+}
+
+// One inspection decision on a lot (append-only). Its movements carry
+// source_type 'inspection', source_id = this id.
+model Inspection {
+  id          String   @id @default(uuid(7))
+  companyId   String   @map("company_id")
+  lotId       String   @map("lot_id")
+  warehouseId String   @map("warehouse_id")
+  disposition String // restockable | damaged | defective | missing_parts | expired | dispose
+  outcome     String // pass | reject | dispose
+  qty         Decimal  @db.Decimal(18, 4)
+  note        String?
+  serials     String[]
+  inspectorId String   @map("inspector_id")
+  sodWaived   Boolean  @default(false) @map("sod_waived") // SR-02 single-inspector warehouse
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  company   Company       @relation(fields: [companyId], references: [id])
+  lot       QuarantineLot @relation(fields: [lotId], references: [id])
+  inspector User          @relation("Inspector", fields: [inspectorId], references: [id])
+
+  @@index([lotId])
+  @@index([companyId, createdAt])
+  @@map("inspection")
+}
+
+// Uploaded evidence (photos / PDFs): allowlisted by content, size-capped (doc 26,
+// edge #28). Linked once to the document it supports (inspection, stock_adjustment).
+model Evidence {
+  id          String   @id @default(uuid(7))
+  companyId   String   @map("company_id")
+  warehouseId String   @map("warehouse_id")
+  entityType  String?  @map("entity_type")
+  entityId    String?  @map("entity_id")
+  fileName    String   @map("file_name")
+  mimeType    String   @map("mime_type")
+  sizeBytes   Int      @map("size_bytes")
+  sha256      String
+  data        Bytes
+  uploadedBy  String   @map("uploaded_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  company   Company   @relation(fields: [companyId], references: [id])
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+  uploader  User      @relation("EvidenceUploader", fields: [uploadedBy], references: [id])
+
+  @@index([companyId, entityType, entityId])
+  @@map("evidence")
 }

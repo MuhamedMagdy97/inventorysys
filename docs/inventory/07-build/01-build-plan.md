@@ -94,12 +94,16 @@ Spec: 11, 07 I-07, 23, 25 (Approvals Inbox), flows 9–12, 17, 27, 28, edge #10,
 - Gate: missing/damaged-in-transit, over-receipt blocked, `reserved_conflict`, double-approve (`src/server/inventory/transfers.test.ts`, `adjustments.test.ts`, HTTP `src/app/api/transfers.test.ts`).
 - Deferred: serialized found/loss adjustments → Part 8 counts; serialized reserve/fulfil → Part 7 (returns need fulfilled serials); draft editing of transfers/adjustments (reject → cancel + recreate for now); approval escalation job + reminders → Part 9; evidence uploads → Part 7.
 
-## Part 7 — Returns + inspection (closes P7 gate)
-Spec: 13, 19 (INV-008/009/022), flows 8, 16, edge #12, 35.
-- T7.1 Purchase returns with `linked_receipt_id` (oldest-first default), supplier_rejected path.
-- T7.2 Sales returns → quarantine → inspection → `sale_return_restock` / `blocked_reject` / `disposal`; batch fallback rule SR-03.
-- T7.3 Inspection screen (quarantine list by reason, evidence upload with allowlist + size caps).
-- Gate: return > fulfilled blocked, restock only after pass, linked cost relieved correctly.
+## Part 7 — Returns + inspection (closes P7 gate) — tasks ✅ 2026-10-07; tag `part-7` after CI is green
+Spec: 13, 19 (INV-008/009/022), flows 8, 16, edge #12, 35. Build decisions: doc 13 §3 + §5 (PR-04…08, SR-05…08, EV-01).
+- [x] T7.1 Purchase returns (draft → submitted → approved → shipped → supplier_confirmed → closed) with lines linked to receipt lots (`linked_receipt_id`, oldest-first default + notice, shipper override), relieved at the linked receipt cost; any bucket (on hand / blocked / damaged / expired); supplier_rejected → `blocked_in` at the shipped value; PR-02 per lot; receipt reversal blocked by live returns.
+- [x] T7.2 Sales returns (requested → approved → received → inspected → restocked | written_off) against fulfilment movements (SR-01), quarantined at the fulfil cost (`linked_fulfilment_ref`); SR-03 inspection batch for expired originals; SR-02 receiver ≠ inspector where possible.
+- [x] T7.3 Quarantine lots (opened/consumed by `postMovements`, reconciler check lots = blocked); inspection decisions `sale_return_restock`/`blocked_release` (+ putaway) / `blocked_reject` / `disposal`; excess lots gated on the PO decision; evidence upload (content-sniffed allowlist, 10 MB cap, audited refusals) for inspections and adjustments.
+- [x] Deferred from Part 6: serialized reserve/fulfil (units named at fulfil, `sold` + reservation link; POS sale too); evidence uploads.
+- [x] UI: `/returns` (both lists), `/returns/purchase/new` (returnable lots per PO), `/returns/purchase/[id]` (actions, ship with lot override), `/returns/sales/new`, `/returns/sales/[id]` (receive with SR-03 expiry), `/inspection` (quarantine by reason, decision form with evidence, movement preview, recent decisions); serials on the sales-order ship / sell-now forms; inbox shows both return types.
+- [x] API: `POST|GET /api/purchase-returns`, `GET /api/purchase-returns/:id`, `POST /api/purchase-returns/:id/{submit|approve|reject|cancel|ship|confirm|supplier-reject|close}`, `POST|GET /api/sales-returns`, `GET /api/sales-returns/:id`, `POST /api/sales-returns/:id/{approve|reject|cancel|receive}`, `GET /api/quarantine`, `POST /api/quarantine/:id/inspect`, `POST /api/evidence` (multipart), `GET /api/evidence/:id`; `serials` on reservation fulfil + POS sale; `evidenceIds` on adjustments.
+- Gate: return > fulfilled / received blocked, restock only after pass (+ SR-02), linked cost relieved (not WAC), supplier refusal round trip, SR-03, serialized sale + return, evidence allowlist (`src/server/returns/returns.test.ts`, HTTP `src/app/api/returns.test.ts`); reconciler clean incl. quarantine lots.
+- Deferred: cross-warehouse customer returns; per-line pinning of which fulfilment bin a serial left from (linked by batch); virus-scan hook + object storage for evidence (bytea for now); evidence on returns themselves (inspections/adjustments only); draft editing of returns (reject → cancel + recreate); financial credit-note matching (text ref only, V1).
 
 ## Part 8 — Counts, opening balance, import/export — tasks ✅ 2026-10-07; tag `part-8` after CI is green
 Spec: 23 (count), 19 INV-023, flows 19–21, 26, edge #14, 28. Build decisions: doc 23 (count), doc 08 MV-04, doc 20 flows 20/21/26.

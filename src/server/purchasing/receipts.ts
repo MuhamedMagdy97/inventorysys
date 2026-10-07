@@ -228,7 +228,7 @@ export async function postReceipt(
   })));
   if (serials.length) {
     // S-01: globally unique among live units (the partial unique index is the backstop).
-    const taken = await tx.serialUnit.findMany({ where: { companyId: ctx.companyId, serialNo: { in: serials.map((s) => s.serialNo) }, status: { not: "reversed" } }, select: { serialNo: true } });
+    const taken = await tx.serialUnit.findMany({ where: { companyId: ctx.companyId, serialNo: { in: serials.map((s) => s.serialNo) }, status: { notIn: ["reversed", "returned"] } }, select: { serialNo: true } });
     const dupes = [...taken.map((t) => t.serialNo), ...serials.map((s) => s.serialNo).filter((n, i, a) => a.indexOf(n) !== i)];
     if (dupes.length) throw new AppError("duplicate", `Serial number(s) already exist: ${[...new Set(dupes)].join(", ")}`, { field: "serials", serials: [...new Set(dupes)] });
     await tx.serialUnit.createMany({ data: serials });
@@ -260,6 +260,10 @@ export async function reverseReceipt(tx: Tx, ctx: Ctx, input: { receiptId: strin
   if (!input.reason?.trim()) throw new AppError("validation_error", "A reversal needs a reason", { field: "reason" });
   const po = await lockPo(tx, ctx, original.poId);
   if (await tx.goodsReceipt.findUnique({ where: { reversalOfReceiptId: original.id } })) throw new AppError("duplicate", "Receipt was already reversed");
+  // Units already returned against this receipt can't be un-received a second time.
+  if (await tx.purchaseReturnLine.findFirst({ where: { receiptId: original.id, purchaseReturn: { status: { notIn: ["cancelled", "supplier_rejected"] } } } })) {
+    throw new AppError("conflict", "This receipt has purchase returns; cancel them or correct with an adjustment", { reason: "has_returns" });
+  }
   if (!["ordered", "partially_received", "fully_received"].includes(po.status)) {
     throw new AppError("invalid_transition", `Receipts of a ${po.status} PO can't be reversed`, { status: po.status });
   }
@@ -345,11 +349,12 @@ export async function decideExcess(tx: Tx, ctx: Ctx, input: { receiptLineId: str
     if (!line.inspection) {
       // The approver acts globally (purchases.approve); the release is part of that decision,
       // so it posts in the receipt warehouse even if the approver holds no warehouse scope.
+      const lot = await tx.quarantineLot.findFirst({ where: { sourceType: "goods_receipt", sourceId: line.receiptId, sourceLine: String(line.lineNo), reason: "excess" } });
       const posted = await postMovements(tx, { ...ctx, warehouseIds: [line.receipt.warehouseId] }, {
         sourceType: "receipt_excess", sourceId: line.id, action: "excess_approve",
         legs: [{
           type: "blocked_release", variantId: line.variantId, warehouseId: line.receipt.warehouseId, binId: line.binId, batchId: line.batchId,
-          delta: { blocked: excess.neg(), onHand: excess }, line: 1, reasonCode: "excess_approved",
+          delta: { blocked: excess.neg(), onHand: excess }, line: 1, reasonCode: "excess_approved", lotId: lot?.id,
           ...(line.variant.product.isSerialized ? { serialized: true as const } : {}),
         }],
       });

@@ -100,19 +100,23 @@ export async function updateWarehouse(
   return after;
 }
 
-// WH-02 / edge #5. Open POs stand for expected receipts; open transfers either way incl. in-transit (edge #25); open counts.
+// WH-02 / edge #5. Open POs stand for expected receipts; open transfers either way incl. in-transit (edge #25); open counts;
+// returns that can still post here (a shipped purchase return may come back supplier_rejected; received sales returns are blocked stock).
 async function assertWarehouseEmpty(tx: Tx, warehouseId: string) {
-  const [stock, reserved, reservations, openPos, openTransfers, openCounts] = await Promise.all([
+  const [stock, reserved, reservations, openPos, openTransfers, openCounts, openPurchaseReturns, openSalesReturns] = await Promise.all([
     tx.stockBalance.count({ where: { warehouseId, OR: [{ onHand: { gt: 0 } }, { blocked: { gt: 0 } }, { damaged: { gt: 0 } }, { expired: { gt: 0 } }] } }),
     tx.stockAllocation.count({ where: { warehouseId, qtyReserved: { gt: 0 } } }),
     tx.reservation.count({ where: { warehouseId, status: { in: ["active", "partially_fulfilled"] } } }),
     tx.purchaseOrder.count({ where: { warehouseId, status: { in: ["draft", "submitted", "approved", "ordered", "partially_received"] } } }),
     tx.transfer.count({ where: { OR: [{ fromWarehouseId: warehouseId }, { toWarehouseId: warehouseId }], status: { in: OPEN_TRANSFER } } }),
     tx.stockCount.count({ where: { warehouseId, status: { in: OPEN_COUNT } } }),
+    tx.purchaseReturn.count({ where: { warehouseId, status: { in: ["draft", "submitted", "approved", "shipped"] } } }),
+    tx.salesReturn.count({ where: { warehouseId, status: { in: ["requested", "approved"] } } }),
   ]);
-  if (stock || reserved || reservations || openPos || openTransfers || openCounts) {
-    throw new AppError("conflict", "Warehouse still holds stock, open reservations, POs, transfers or counts; empty and close it first (WH-02)", {
-      reason: "not_empty", stockPositions: stock, reservedPositions: reserved, openReservations: reservations, openPos, openTransfers, openCounts,
+  const openReturns = openPurchaseReturns + openSalesReturns;
+  if (stock || reserved || reservations || openPos || openTransfers || openCounts || openReturns) {
+    throw new AppError("conflict", "Warehouse still holds stock, open reservations, POs, transfers, counts or returns; empty and close it first (WH-02)", {
+      reason: "not_empty", stockPositions: stock, reservedPositions: reserved, openReservations: reservations, openPos, openTransfers, openCounts, openReturns,
     });
   }
 }
