@@ -14,6 +14,7 @@ export const SettingsSchema = z.object({
   channelTtlSeconds: z.partialRecord(z.enum(["pos", "web", "marketplace", "api"]), z.number().int().min(60).max(30 * 24 * 3600)),
   receiptTolerancePct: z.number().min(0).max(100),
   barcodeAliasDays: z.number().int().min(0).max(365), // P-CAT-02
+  approvalSlaHours: z.number().int().min(1).max(720), // N-04: inbox flags older approvals as overdue
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -23,6 +24,7 @@ const DEFAULTS: Omit<Settings, "currency"> = {
   channelTtlSeconds: { pos: 15 * 60 },
   receiptTolerancePct: 0,
   barcodeAliasDays: 30,
+  approvalSlaHours: 48,
 };
 
 // Internal read for domain code (no permission: callers already authorized their action).

@@ -18,6 +18,7 @@ async function saveSettings(_: ActionState, form: FormData): Promise<ActionState
     channelTtlSeconds: Object.fromEntries(CHANNELS.filter((c) => form.get(`ttl.${c}`)).map((c) => [c, Math.round(Number(form.get(`ttl.${c}`)) * 60)])),
     receiptTolerancePct: Number(form.get("receiptTolerancePct")),
     barcodeAliasDays: Number(form.get("barcodeAliasDays")),
+    approvalSlaHours: Number(form.get("approvalSlaHours")),
   }));
 }
 
@@ -55,6 +56,10 @@ export default async function SettingsPage() {
             <label className="label">
               Old barcodes keep scanning for (days)
               <input name="barcodeAliasDays" type="number" min={0} max={365} step={1} defaultValue={s.barcodeAliasDays} required className="input" />
+            </label>
+            <label className="label">
+              Approvals overdue after (hours)
+              <input name="approvalSlaHours" type="number" min={1} max={720} step={1} defaultValue={s.approvalSlaHours} required className="input" />
             </label>
           </div>
           <p className="text-xs text-muted">Approval limits are set per role grant on the Roles page.</p>
