@@ -73,7 +73,13 @@ export type Leg = {
 };
 
 // postedAt: backdated created_at — opening_balance legs only (MV-04; a DB trigger backs it up).
-export type PostInput = { sourceType: string; sourceId: string; legs: Leg[]; action?: string; postedAt?: Date };
+export type PostInput = {
+  sourceType: string; sourceId: string; legs: Leg[]; action?: string; postedAt?: Date;
+  // T10.2 hot path (reserve): the caller already ran checkRefs() on these legs and
+  // lockPositions() on their positions in this transaction, and has posted nothing since,
+  // so they aren't re-validated / re-locked while the position lock is held. Reservation legs only.
+  prelocked?: Map<string, PosState>;
+};
 
 export type PostResult = {
   movements: InventoryMovement[];
@@ -98,13 +104,17 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
   if (new Set(legs.map((l) => l.key)).size !== legs.length) {
     throw new AppError("validation_error", "Duplicate leg key within one posting");
   }
-  await validateRefs(tx, ctx, legs);
+  const pre = input.prelocked;
+  if (pre && !legs.every((l) => SHAPES[l.type]!.kind === "reserve" && pre.has(posKey(l.variantId, l.warehouseId, l.batchId)))) {
+    throw new AppError("conflict", "A prelocked posting carries only reservation legs on locked positions");
+  }
+  if (!pre) await validateRefs(tx, ctx, legs);
   await checkReversals(tx, ctx, legs);
   assertPutawayPairs(legs);
 
   // 1. Locks: allocation rows (position), then bin rows ordered by bin_id, then cost rows.
   const positions = uniq(legs.map((l) => [l.variantId, l.warehouseId, l.batchId] as const), (p) => posKey(...p));
-  const pos = await lockPositions(tx, ctx, positions);
+  const pos = pre ?? (await lockPositions(tx, ctx, positions));
   const physical = legs.filter((l) => l.binId);
   const bins = await lockBins(tx, ctx, uniq(physical.map((l) => [l.variantId, l.warehouseId, l.binId!, l.batchId] as const), (b) => binKey(...b)));
   const costs = await lockCosts(tx, ctx, uniq(physical.map((l) => [l.variantId, l.warehouseId] as const), (c) => costKey(...c)));
@@ -362,18 +372,23 @@ function normalize(ctx: Ctx, input: PostInput, l: Leg): Norm {
 
 // Every referenced row must belong to ctx.companyId; bins to their warehouse;
 // batches to their variant; batch present iff the product is batch-tracked.
-async function validateRefs(tx: Tx, ctx: Ctx, legs: Norm[]) {
+type RefLeg = Pick<Norm, "variantId" | "warehouseId" | "binId" | "batchId" | "serialized">;
+// Exported for reserve, which checks refs before it takes the position lock (PostInput.prelocked).
+export const checkRefs = (tx: Tx, ctx: Ctx, legs: RefLeg[]) => validateRefs(tx, ctx, legs);
+
+async function validateRefs(tx: Tx, ctx: Ctx, legs: RefLeg[]) {
   const companyId = ctx.companyId;
-  const ids = (f: (l: Norm) => string | null) => [...new Set(legs.map(f).filter((x): x is string => !!x))];
+  const ids = (f: (l: RefLeg) => string | null) => [...new Set(legs.map(f).filter((x): x is string => !!x))];
+  const binIds = ids((l) => l.binId), batchIds = ids((l) => l.batchId);
   // Share locks pair with the FOR UPDATE an archive takes (WH-02/03): an archive waits
   // for in-flight postings, and a posting after it sees `archived` and is rejected.
   await tx.$executeRaw`SELECT 1 FROM warehouse WHERE id = ANY(${ids((l) => l.warehouseId)}::text[]) ORDER BY id FOR SHARE`;
-  await tx.$executeRaw`SELECT 1 FROM bin WHERE id = ANY(${ids((l) => l.binId)}::text[]) ORDER BY id FOR SHARE`;
+  if (binIds.length) await tx.$executeRaw`SELECT 1 FROM bin WHERE id = ANY(${binIds}::text[]) ORDER BY id FOR SHARE`;
   const [variants, warehouses, bins, batches] = await Promise.all([
     tx.productVariant.findMany({ where: { companyId, id: { in: ids((l) => l.variantId) } }, include: { product: true } }),
     tx.warehouse.findMany({ where: { companyId, id: { in: ids((l) => l.warehouseId) } } }),
-    tx.bin.findMany({ where: { companyId, id: { in: ids((l) => l.binId) } } }),
-    tx.batch.findMany({ where: { companyId, id: { in: ids((l) => l.batchId) } } }),
+    binIds.length ? tx.bin.findMany({ where: { companyId, id: { in: binIds } } }) : [],
+    batchIds.length ? tx.batch.findMany({ where: { companyId, id: { in: batchIds } } }) : [],
   ]);
   const V = new Map(variants.map((v) => [v.id, v]));
   const W = new Map(warehouses.map((w) => [w.id, w]));

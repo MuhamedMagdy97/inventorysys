@@ -1,4 +1,5 @@
 import { PgBoss } from "pg-boss";
+import { validateEnv } from "@/server/env";
 import { expireDueReservations, runReconciler, sweepExpiredBatches } from "@/server/inventory/jobs";
 import { escalateApprovals, sendDigests, sendInstantEmails, stockAlerts } from "@/server/notifications/jobs";
 
@@ -16,7 +17,8 @@ const JOBS = [
 ];
 
 async function main() {
-  const boss = new PgBoss(process.env.DATABASE_URL!);
+  const env = validateEnv(); // doc 26: fail fast on a bad environment
+  const boss = new PgBoss(env.DATABASE_URL);
   boss.on("error", (e) => console.error("pg-boss", e));
   await boss.start();
   for (const job of JOBS) {

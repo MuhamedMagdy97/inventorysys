@@ -16,7 +16,23 @@ export type Ctx = {
   requestId: string;
   channel?: "web" | "api" | "mobile" | "scan" | "system";
   salesChannel?: SalesChannel; // API-key requests: the service user's channel (SO-06)
+  authAt?: Date; // web sessions: when the user last signed in (step-up, doc 26)
 };
+
+// Doc 26 step-up: sensitive grants need a sign-in within this window on web sessions.
+export const STEP_UP_MINUTES = 30;
+const SENSITIVE = new Set([
+  "inventory.count_apply", "inventory.adjust_apply", "inventory.receive", "inventory.transfer_ship",
+  "inventory.transfer_receive", "purchases.return_ship", "sales.return_receive", "users.manage", "roles.manage",
+]);
+const isSensitive = (p: string) => SENSITIVE.has(p) || p.endsWith(".approve") || p.endsWith("_approve");
+
+// Only interactive sessions step up (API keys and jobs are exempt), and only when every
+// accepted grant is sensitive: a call that also accepts a view grant is a read.
+function needsStepUp(ctx: Ctx, grants: string[]) {
+  if (ctx.channel !== "web" || !grants.every(isSensitive)) return false;
+  return !ctx.authAt || Date.now() - ctx.authAt.getTime() > STEP_UP_MINUTES * 60_000;
+}
 
 // The auth guard every domain function calls itself (T2.3): permission (any of) +
 // warehouse scope (INV-013) + approval limit (INV-020). A denial is audited as
@@ -41,6 +57,9 @@ export async function requirePermission(
     if (!unlimited && max && max.lt(opts.amount)) {
       denial = { message: "Amount above your approval limit", details: { reason: "over_limit", limit: max.toString(), amount: String(opts.amount) } };
     }
+  }
+  if (!denial && needsStepUp(ctx, any)) {
+    denial = { message: "Please sign in again to confirm this action", details: { reason: "step_up_required", maxAgeMinutes: STEP_UP_MINUTES } };
   }
   if (!denial) return;
   throw await deny(ctx, denial.message, denial.details, { type: "permission", id: any.join("|"), warehouseId: opts.warehouseId });

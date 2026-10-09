@@ -3,7 +3,7 @@ import { createBatch, createProduct } from "@/server/catalog/catalog";
 import { db, transaction } from "@/server/db";
 import { seedCompany } from "@/server/seed";
 import { createWarehouse } from "@/server/warehouses/warehouses";
-import { postMovements, type Leg } from "./post";
+import { lockPositions, postMovements, type Leg } from "./post";
 
 let w: Awaited<ReturnType<typeof seedCompany>>;
 let bin: Record<string, string>; // code → id
@@ -198,4 +198,15 @@ describe("invariants", () => {
     const c = await cost();
     expect([c.qty.toString(), c.value.toString()]).toEqual(["0", "0"]);
   });
+});
+
+test("T10.2: a prelocked posting only takes reservation legs on positions the caller locked", async () => {
+  const run = (legs: Leg[], lockOther = false) => transaction(async (tx) => {
+    const pos = await lockPositions(tx, w.ctx, [[lockOther ? w.variants[1].id : v, w.warehouse.id, null]]);
+    return postMovements(tx, w.ctx, { sourceType: "reservation", sourceId: `pre-${++src}`, legs, prelocked: pos });
+  });
+  const physical: Leg = { type: "adjustment_in", variantId: v, warehouseId: w.warehouse.id, binId: bin.MAIN, delta: { onHand: 1 }, unitCost: 1, line: 1, reasonCode: "t" };
+  const reserveLeg: Leg = { type: "reservation", variantId: v, warehouseId: w.warehouse.id, delta: { reserved: 1 }, line: 1, reasonCode: "t" };
+  await expect(run([physical])).rejects.toMatchObject({ code: "conflict" });
+  await expect(run([reserveLeg], true)).rejects.toMatchObject({ code: "conflict" });
 });

@@ -7,7 +7,7 @@ const expected: Record<ErrorCode, number> = {
   insufficient_stock: 409, reserved_conflict: 409, batch_insufficient: 409,
   invalid_transition: 422, version_conflict: 409, archived_conflict: 409,
   discontinued_conflict: 409, reservation_expired: 409, forbidden: 403,
-  not_found: 404, conflict: 409, validation_error: 422, duplicate: 409,
+  not_found: 404, conflict: 409, validation_error: 422, duplicate: 409, rate_limited: 429,
 };
 
 test("every spec code maps to its HTTP status through withApi", async () => {
