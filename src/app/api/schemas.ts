@@ -121,6 +121,7 @@ export const AdjustmentCreate = z.object({
     batchNo: text(60).nullable().optional(), expiryDate: z.coerce.date().nullable().optional(), // opening
     bucket: z.enum(["damaged", "expired", "blocked"]).nullable().optional(), unitCost: zDec.nullable().optional(), serials: zSerials,
   })).min(1).max(500),
+  evidenceIds: z.array(zId).max(20).optional(), // uploaded via POST /api/evidence
 });
 export const AdjustmentAction = z.object({ ...zVersion, comment: text(2000).nullable().optional() });
 
@@ -138,6 +139,31 @@ export const CountAction = z.object({
   })).max(5000).optional(),
 });
 export const ImportConfirm = z.object({ ...zVersion, mode: z.enum(["all_or_nothing", "valid_only"]).optional() });
+// ───────────── Part 7: returns + inspection ─────────────
+const zEvidenceIds = z.array(zId).max(20).optional();
+export const PurchaseReturnCreate = z.object({
+  poId: zId, reasonCode: text(50), note: text(2000).nullable().optional(),
+  lines: z.array(z.object({
+    variantId: zId, qty: zQty4, batchId: zId.nullable().optional(), bucket: z.enum(["onHand", "blocked", "damaged", "expired"]).optional(),
+    receiptLineId: zId.nullable().optional(), serials: zSerials,
+  })).min(1).max(500),
+});
+export const PurchaseReturnAction = z.object({
+  ...zVersion, comment: text(2000).nullable().optional(), note: text(2000).nullable().optional(), creditNoteRef: text(100).nullable().optional(),
+  lines: z.array(z.object({ lineId: zId, receiptLineId: zId })).max(500).optional(), // ship: re-point lots
+});
+export const SalesReturnCreate = z.object({
+  reasonCode: text(50), note: text(2000).nullable().optional(),
+  lines: z.array(z.object({ reservationId: zId, qty: zQty4, batchId: zId.nullable().optional(), serials: zSerials })).min(1).max(500),
+});
+export const SalesReturnAction = z.object({
+  ...zVersion, comment: text(2000).nullable().optional(),
+  lines: z.array(z.object({ lineId: zId, qty: zQty0, expiryDate: z.coerce.date().nullable().optional() })).max(500).optional(), // receive
+});
+export const InspectBody = z.object({
+  disposition: z.enum(["restockable", "damaged", "defective", "missing_parts", "expired", "dispose"]),
+  qty: zQty4, binId: zId.nullable().optional(), note: text(2000).nullable().optional(), serials: zSerials, evidenceIds: zEvidenceIds,
+});
 
 // ───────────── Part 5: sales channels ─────────────
 export const ReserveBody = z.object({
@@ -150,4 +176,5 @@ export const ReserveBody = z.object({
   ttlSeconds: z.number().int().positive().optional(),
   externalOrderId: z.string().trim().min(1).max(100).optional(),
   channel: z.enum(["pos", "web", "marketplace", "api"]).optional(), // staff only; API keys act as their own channel (SO-06)
+  serials: z.array(z.string().max(100)).max(10000).optional(), // POS sale of serialized items (S-02)
 });

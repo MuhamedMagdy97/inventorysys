@@ -1,10 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
   reactCompiler: true,
-  // Import uploads (flow 20) are capped at 5 MB in the domain; leave room for multipart overhead.
-  experimental: { serverActions: { bodySizeLimit: "6mb" } },
+  experimental: {
+    // Evidence uploads (≤ 10 MB per file, doc 26) and imports (≤ 5 MB, flow 20) + multipart overhead.
+    serverActions: { bodySizeLimit: "11mb" },
+  },
 };
 
 export default nextConfig;

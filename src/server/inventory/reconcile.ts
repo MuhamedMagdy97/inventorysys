@@ -99,6 +99,19 @@ export async function reconcile(ctx: Ctx): Promise<Drift[]> {
           FROM k FULL JOIN m ON k.variant_id = m.variant_id AND k.warehouse_id = m.warehouse_id
           WHERE COALESCE(k.qty, 0) <> COALESCE(m.q, 0) OR COALESCE(k.value, 0) <> COALESCE(m.v, 0)`),
 
+        // 7. Quarantine lots (doc 25 Inspection): open lot qty per bin row = blocked.
+        ...(await tx.$queryRaw<Row[]>`
+          WITH q AS (
+            SELECT variant_id, warehouse_id, bin_id, batch_id, SUM(qty_open) q
+            FROM quarantine_lot WHERE company_id = ${c} GROUP BY 1, 2, 3, 4),
+          s AS (SELECT * FROM stock_balance WHERE company_id = ${c} AND blocked <> 0)
+          SELECT 'quarantine_lots' AS "check", COALESCE(s.variant_id, q.variant_id) variant_id, COALESCE(s.warehouse_id, q.warehouse_id) warehouse_id,
+                 COALESCE(s.bin_id, q.bin_id) bin_id, COALESCE(s.batch_id, q.batch_id) batch_id,
+                 trim_scale(COALESCE(s.blocked, 0))::text expected, trim_scale(COALESCE(q.q, 0))::text actual
+          FROM s FULL JOIN q ON s.variant_id = q.variant_id AND s.warehouse_id = q.warehouse_id
+            AND s.bin_id = q.bin_id AND s.batch_id IS NOT DISTINCT FROM q.batch_id
+          WHERE COALESCE(s.blocked, 0) <> COALESCE(q.q, 0)`),
+
         // 6. In-transit per transfer: ledger (doc 11 §5) = open line value and qty (I-04).
         ...(await tx.$queryRaw<Row[]>`
           WITH m AS (

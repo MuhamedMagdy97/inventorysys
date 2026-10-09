@@ -6,6 +6,7 @@ import { AppError, assertVersion } from "@/server/core/errors";
 import { nextNumber } from "@/server/core/sequences";
 import { stateMachine } from "@/server/core/state";
 import { db, type Tx } from "@/server/db";
+import { attachEvidence } from "@/server/evidence/evidence";
 import { notify } from "@/server/notifications/notify";
 import { resolveBatch } from "@/server/purchasing/receipts";
 import { Dec, dec, lockPositions, pickBins, postMovements, type Bucket, type DecValue, type Leg } from "./post";
@@ -53,7 +54,7 @@ const ZERO = dec(0);
 export async function createAdjustment(
   tx: Tx,
   ctx: Ctx,
-  input: { kind: AdjustmentKind; warehouseId: string; reasonCode: string; note?: string | null; asOf?: Date | null; lines: AdjustmentLineInput[] },
+  input: { kind: AdjustmentKind; warehouseId: string; reasonCode: string; note?: string | null; asOf?: Date | null; lines: AdjustmentLineInput[]; evidenceIds?: string[] },
 ) {
   await requirePermission(ctx, createGrant(input.kind), { warehouseId: input.warehouseId });
   const opening = input.kind === "opening";
@@ -127,7 +128,8 @@ export async function createAdjustment(
     },
     include: { lines: { orderBy: { lineNo: "asc" } } },
   });
-  await writeAudit(tx, ctx, { action: "create", entityType: "stock_adjustment", entityId: adj.id, warehouseId: wh.id, after: adj });
+  const evidenceIds = await attachEvidence(tx, ctx, input.evidenceIds, { type: "stock_adjustment", id: adj.id, warehouseId: wh.id }); // flow 12/17
+  await writeAudit(tx, ctx, { action: "create", entityType: "stock_adjustment", entityId: adj.id, warehouseId: wh.id, after: { ...adj, evidenceIds } });
   return adj;
 }
 

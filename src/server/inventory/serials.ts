@@ -11,8 +11,8 @@ export async function takeSerials(
   tx: Tx,
   ctx: Ctx,
   p: {
-    sku: string; variantId: string; warehouseId: string; batchId: string | null; qty: Dec; serials: string[] | undefined;
-    status: SerialStatus[]; transferLineId?: string; field?: string;
+    sku: string; variantId: string; warehouseId: string; batchId: string | null | undefined; qty: Dec; serials: string[] | undefined;
+    status: SerialStatus[]; transferLineId?: string; field?: string; binId?: string; // batchId undefined = any batch
   },
 ): Promise<SerialUnit[]> {
   const field = p.field ?? "serials";
@@ -23,12 +23,13 @@ export async function takeSerials(
   if (!list.length) return [];
   const ids = await tx.$queryRaw<{ id: string }[]>`
     SELECT id FROM serial_unit
-    WHERE company_id = ${ctx.companyId} AND variant_id = ${p.variantId} AND serial_no = ANY(${list}::text[]) AND status <> 'reversed'
+    WHERE company_id = ${ctx.companyId} AND variant_id = ${p.variantId} AND serial_no = ANY(${list}::text[]) AND status NOT IN ('reversed', 'returned')
     ORDER BY id FOR UPDATE`;
   const units = await tx.serialUnit.findMany({ where: { id: { in: ids.map((r) => r.id) } } });
   const bad = list.filter((n) => {
     const u = units.find((x) => x.serialNo === n);
-    return !u || u.warehouseId !== p.warehouseId || u.batchId !== p.batchId || !p.status.includes(u.status)
+    return !u || u.warehouseId !== p.warehouseId || (p.batchId !== undefined && u.batchId !== p.batchId) || !p.status.includes(u.status)
+      || (p.binId !== undefined && u.binId !== p.binId)
       || (p.transferLineId !== undefined && u.transferLineId !== p.transferLineId);
   });
   if (bad.length) {

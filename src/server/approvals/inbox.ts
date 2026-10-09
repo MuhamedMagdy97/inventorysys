@@ -8,6 +8,8 @@ import { dec } from "@/server/inventory/post";
 import { approveTransfer, decideVariance, rejectTransfer } from "@/server/inventory/transfers";
 import { approvePo, rejectPo } from "@/server/purchasing/purchase-orders";
 import { decideExcess } from "@/server/purchasing/receipts";
+import { approvePurchaseReturn, rejectPurchaseReturn, returnValue } from "@/server/returns/purchase-returns";
+import { approveSalesReturn, rejectSalesReturn, salesReturnValue } from "@/server/returns/sales-returns";
 import { readSettings } from "@/server/settings/settings";
 
 // Doc 25 Approvals Inbox: everything waiting on the current user, oldest first, with
@@ -16,7 +18,7 @@ import { readSettings } from "@/server/settings/settings";
 // with a higher limit (INV-020). ponytail: escalation job + reminders arrive with Part 9.
 
 export type InboxItem = {
-  type: "purchase_order" | "receipt_excess" | "transfer" | "transfer_variance" | "stock_adjustment" | "adjustment_apply" | "stock_count" | "count_apply";
+  type: "purchase_order" | "receipt_excess" | "transfer" | "transfer_variance" | "stock_adjustment" | "adjustment_apply" | "stock_count" | "count_apply" | "purchase_return" | "sales_return";
   id: string; // the document the decision acts on
   version: number | null;
   number: string;
@@ -141,6 +143,28 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
       });
     }
   }
+  if (has("purchases.return_approve")) {
+    const prs = await db.purchaseReturn.findMany({
+      where: { companyId: ctx.companyId, status: "submitted", createdBy: me }, include: { supplier: { select: { name: true } }, lines: true },
+    });
+    for (const r of scoped(prs, (r) => r.warehouseId)) {
+      const amount = returnValue(r).toFixed(2);
+      out.push({
+        type: "purchase_return", id: r.id, version: r.version, number: r.number, summary: `Return to ${r.supplier.name} (${r.reasonCode}), ${r.lines.length} line(s)`,
+        amount, waitingSince: r.updatedAt, overLimit: !limitOk("purchases.return_approve", amount), link: `/returns/purchase/${r.id}`,
+      });
+    }
+  }
+  if (has("sales.return_approve")) {
+    const srs = await db.salesReturn.findMany({ where: { companyId: ctx.companyId, status: "requested", createdBy: me }, include: { lines: true } });
+    for (const r of scoped(srs, (r) => r.warehouseId)) {
+      const amount = salesReturnValue(r).toFixed(2);
+      out.push({
+        type: "sales_return", id: r.id, version: r.version, number: r.number, summary: `Customer return (${r.reasonCode}), ${r.lines.length} line(s)`,
+        amount, waitingSince: r.updatedAt, overLimit: !limitOk("sales.return_approve", amount), link: `/returns/sales/${r.id}`,
+      });
+    }
+  }
 
   const { approvalSlaHours } = await readSettings(db, ctx.companyId);
   const items = out
@@ -181,5 +205,9 @@ export async function decide(
     case "count_apply":
       if (!input.approve) throw new AppError("validation_error", "An approved count is applied or cancelled on its page");
       return applyCount(tx, ctx, { id: input.id, version: v });
+    case "purchase_return":
+      return input.approve ? approvePurchaseReturn(tx, ctx, { id: input.id, version: v, comment }) : rejectPurchaseReturn(tx, ctx, { id: input.id, version: v, comment: comment ?? "" });
+    case "sales_return":
+      return input.approve ? approveSalesReturn(tx, ctx, { id: input.id, version: v, comment }) : rejectSalesReturn(tx, ctx, { id: input.id, version: v, comment: comment ?? "" });
   }
 }
