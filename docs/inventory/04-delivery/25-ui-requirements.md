@@ -18,4 +18,4 @@ Each screen: purpose / info / actions / filters / perms / states (empty/loading/
 - **Transfer Ship/Receive:** serial/batch pickers, partial-receive repeat form, variance acknowledgment (missing/damaged) with claim note field.
 - **Users/Roles/Audit/Notifications/Settings:** admin tables, permission matrix editor, audit explorer (before/after diff), notification center, settings forms (company/currency/timezone/tax/thresholds/sequences/reservation TTL).
 
-Global: search (SKU/barcode/PO/SO/batch/serial/supplier/warehouse/user) with scoped results; empty states with next action; error states with trace_id; loading skeletons; mobile-responsive tables (native app future, web must work on scanners/tablets).
+Global: search (SKU/barcode/PO/SO/batch/serial/supplier/warehouse/user) with scoped results (Part 9: each result group needs its view grant; POs, sales orders, batches, serials and warehouses only from warehouses in scope; SKU/barcode aliases resolve; 2–100 chars, up to 8 hits per group); empty states with next action; error states with trace_id; loading skeletons; mobile-responsive tables (native app future, web must work on scanners/tablets).

@@ -15,7 +15,7 @@ import { readSettings } from "@/server/settings/settings";
 // Doc 25 Approvals Inbox: everything waiting on the current user, oldest first, with
 // SLA age (N-04). Only items the user may decide: right grant, warehouse in scope, not
 // their own document (INV-006). Over-limit items are shown flagged — they need someone
-// with a higher limit (INV-020). ponytail: escalation job + reminders arrive with Part 9.
+// with a higher limit (INV-020). Reminder + escalation: src/server/notifications/jobs.ts.
 
 export type InboxItem = {
   type: "purchase_order" | "receipt_excess" | "transfer" | "transfer_variance" | "stock_adjustment" | "adjustment_apply" | "stock_count" | "count_apply" | "purchase_return" | "sales_return";
@@ -29,6 +29,8 @@ export type InboxItem = {
   overdue: boolean;
   overLimit: boolean;
   link: string;
+  warehouseId: string; // for scoped reminders (N-02)
+  grant: string; // the grant that decides it
 };
 
 const ago = (d: Date) => Math.floor((Date.now() - d.getTime()) / 3_600_000);
@@ -47,7 +49,7 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
     const pos = await db.purchaseOrder.findMany({ where: { companyId: ctx.companyId, status: "submitted", createdBy: me } });
     for (const p of pos) {
       out.push({
-        type: "purchase_order", id: p.id, version: p.version, number: p.number, summary: `PO to ${p.supplierName}`,
+        type: "purchase_order", warehouseId: p.warehouseId, grant: "purchases.approve", id: p.id, version: p.version, number: p.number, summary: `PO to ${p.supplierName}`,
         amount: `${p.total.toFixed(2)} ${p.currency}`, waitingSince: p.updatedAt, overLimit: !limitOk("purchases.approve", p.total.toString()), link: `/purchase-orders/${p.id}`,
       });
     }
@@ -58,7 +60,7 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
     for (const l of excess) {
       const amount = dec(l.qtyExcessBlocked).times(dec(l.unitCost)).toFixed(2);
       out.push({
-        type: "receipt_excess", id: l.id, version: null, number: l.receipt.po.number, summary: `Over-delivery ${l.variant.sku} ×${dec(l.qtyExcessBlocked).toString()} on ${l.receipt.number}`,
+        type: "receipt_excess", warehouseId: l.receipt.warehouseId, grant: "purchases.approve", id: l.id, version: null, number: l.receipt.po.number, summary: `Over-delivery ${l.variant.sku} ×${dec(l.qtyExcessBlocked).toString()} on ${l.receipt.number}`,
         amount, waitingSince: l.receipt.receivedAt, overLimit: !limitOk("purchases.approve", amount), link: `/purchase-orders/${l.receipt.po.id}`,
       });
     }
@@ -76,7 +78,7 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
         return c && !dec(c.qty).isZero() ? s.plus(dec(l.qtyRequested).times(dec(c.value)).div(dec(c.qty))) : s;
       }, dec(0)).toFixed(2);
       out.push({
-        type: "transfer", id: t.id, version: t.version, number: t.number, summary: `Transfer ${t.fromWarehouse.code} → ${t.toWarehouse.code}, ${t.lines.length} line(s)`,
+        type: "transfer", warehouseId: t.fromWarehouseId, grant: "inventory.transfer_approve", id: t.id, version: t.version, number: t.number, summary: `Transfer ${t.fromWarehouse.code} → ${t.toWarehouse.code}, ${t.lines.length} line(s)`,
         amount, waitingSince: t.updatedAt, overLimit: !limitOk("inventory.transfer_approve", amount), link: `/transfers/${t.id}`,
       });
     }
@@ -87,7 +89,7 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
     for (const t of scoped(variances, (t) => t.toWarehouseId)) {
       const amount = t.lines.reduce((s, l) => s.plus(dec(l.qtyMissingReported).times(dec(l.shippedValue)).div(dec(l.qtyShipped))), dec(0)).toFixed(2);
       out.push({
-        type: "transfer_variance", id: t.id, version: t.version, number: t.number,
+        type: "transfer_variance", warehouseId: t.toWarehouseId, grant: "inventory.transfer_approve", id: t.id, version: t.version, number: t.number,
         summary: `Missing in transit: ${t.lines.reduce((s, l) => s.plus(dec(l.qtyMissingReported)), dec(0)).toString()} unit(s)`,
         amount, waitingSince: t.updatedAt, overLimit: !limitOk("inventory.transfer_approve", amount), link: `/transfers/${t.id}`,
       });
@@ -103,7 +105,7 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
     for (const a of scoped(adjs, (a) => a.warehouseId)) {
       const amount = (await adjustmentValue(db, a)).toFixed(2);
       out.push({
-        type: "stock_adjustment", id: a.id, version: a.version, number: a.number, summary: `${a.kind} at ${a.warehouse.code} (${a.reasonCode}), ${a.lines.length} line(s)`,
+        type: "stock_adjustment", warehouseId: a.warehouseId, grant: GRANTS[a.kind].approve, id: a.id, version: a.version, number: a.number, summary: `${a.kind} at ${a.warehouse.code} (${a.reasonCode}), ${a.lines.length} line(s)`,
         amount, waitingSince: a.updatedAt, overLimit: !limitOk(GRANTS[a.kind].approve, amount), link: `/adjustments/${a.id}`,
       });
     }
@@ -114,7 +116,7 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
     });
     for (const a of scoped(ready, (a) => a.warehouseId)) {
       out.push({
-        type: "adjustment_apply", id: a.id, version: a.version, number: a.number, summary: `Approved adjustment at ${a.warehouse.code} — apply to stock`,
+        type: "adjustment_apply", warehouseId: a.warehouseId, grant: "inventory.adjust_apply", id: a.id, version: a.version, number: a.number, summary: `Approved adjustment at ${a.warehouse.code} — apply to stock`,
         amount: null, waitingSince: a.approvedAt ?? a.updatedAt, overLimit: false, link: `/adjustments/${a.id}`,
       });
     }
@@ -129,7 +131,7 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
       const amount = (await countValue(db, c)).toFixed(2);
       const off = c.lines.filter((l) => !dec(l.countedQty).eq(dec(l.systemQty))).length;
       out.push({
-        type: "stock_count", id: c.id, version: c.version, number: c.number, summary: `Count at ${c.warehouse.code}: ${off} of ${c.lines.length} line(s) differ`,
+        type: "stock_count", warehouseId: c.warehouseId, grant: "inventory.count_approve", id: c.id, version: c.version, number: c.number, summary: `Count at ${c.warehouse.code}: ${off} of ${c.lines.length} line(s) differ`,
         amount, waitingSince: c.updatedAt, overLimit: !limitOk("inventory.count_approve", amount), link: `/counts/${c.id}`,
       });
     }
@@ -138,7 +140,7 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
     const ready = await db.stockCount.findMany({ where: { companyId: ctx.companyId, status: "approved" }, include: { warehouse: { select: { code: true } } } });
     for (const c of scoped(ready, (c) => c.warehouseId)) {
       out.push({
-        type: "count_apply", id: c.id, version: c.version, number: c.number, summary: `Approved count at ${c.warehouse.code} — apply variances`,
+        type: "count_apply", warehouseId: c.warehouseId, grant: "inventory.count_apply", id: c.id, version: c.version, number: c.number, summary: `Approved count at ${c.warehouse.code} — apply variances`,
         amount: null, waitingSince: c.approvedAt ?? c.updatedAt, overLimit: false, link: `/counts/${c.id}`,
       });
     }
@@ -150,7 +152,7 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
     for (const r of scoped(prs, (r) => r.warehouseId)) {
       const amount = returnValue(r).toFixed(2);
       out.push({
-        type: "purchase_return", id: r.id, version: r.version, number: r.number, summary: `Return to ${r.supplier.name} (${r.reasonCode}), ${r.lines.length} line(s)`,
+        type: "purchase_return", warehouseId: r.warehouseId, grant: "purchases.return_approve", id: r.id, version: r.version, number: r.number, summary: `Return to ${r.supplier.name} (${r.reasonCode}), ${r.lines.length} line(s)`,
         amount, waitingSince: r.updatedAt, overLimit: !limitOk("purchases.return_approve", amount), link: `/returns/purchase/${r.id}`,
       });
     }
@@ -160,7 +162,7 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
     for (const r of scoped(srs, (r) => r.warehouseId)) {
       const amount = salesReturnValue(r).toFixed(2);
       out.push({
-        type: "sales_return", id: r.id, version: r.version, number: r.number, summary: `Customer return (${r.reasonCode}), ${r.lines.length} line(s)`,
+        type: "sales_return", warehouseId: r.warehouseId, grant: "sales.return_approve", id: r.id, version: r.version, number: r.number, summary: `Customer return (${r.reasonCode}), ${r.lines.length} line(s)`,
         amount, waitingSince: r.updatedAt, overLimit: !limitOk("sales.return_approve", amount), link: `/returns/sales/${r.id}`,
       });
     }
