@@ -49,6 +49,24 @@ test("T2.1: email+password sign-in → session → web ctx", async () => {
   expect((await audits(u.user.id, "auth.login")).length).toBe(1);
 });
 
+test("T10.3: sensitive grants need a sign-in within 30 min on web sessions (step-up)", async () => {
+  const u = await loginUser(w, "purchasing_manager");
+  const s = await u.signIn();
+  const fresh = await sessionCtx(new Headers(s.headers), "r1");
+  await expect(requirePermission(fresh, "purchases.approve")).resolves.toBeUndefined();
+
+  await db.session.updateMany({ where: { userId: u.user.id }, data: { createdAt: new Date(Date.now() - 31 * 60_000) } });
+  const stale = await sessionCtx(new Headers(s.headers), "r2");
+  await expect(requirePermission(stale, "purchases.approve")).rejects.toEqual(forbidden("step_up_required"));
+  await expect(requirePermission(stale, ["purchases.approve", "purchases.view"])).resolves.toBeUndefined(); // a read
+  await expect(requirePermission(stale, "purchases.create")).resolves.toBeUndefined(); // not sensitive
+  await expect(requirePermission({ ...stale, channel: "api", authAt: undefined }, "purchases.approve")).resolves.toBeUndefined();
+  expect((await audits("purchases.approve", "access.denied")).at(-1)?.after).toMatchObject({ reason: "step_up_required" });
+
+  const again = await sessionCtx(new Headers((await u.signIn()).headers), "r3"); // re-auth = new session
+  await expect(requirePermission(again, "purchases.approve")).resolves.toBeUndefined();
+});
+
 test("T2.1: lockout after 5 failed passwords; admin unlock restores access", async () => {
   const u = await loginUser(w, "viewer");
   for (let i = 0; i < 5; i++) expect((await u.signIn("wrong-password!")).status).toBe(401);

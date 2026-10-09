@@ -17,6 +17,8 @@ export const auth = betterAuth({
   advanced: { database: { generateId: false } }, // Prisma's @default(uuid(7))
   emailAndPassword: { enabled: true, disableSignUp: true, minPasswordLength: 10 },
   session: { expiresIn: 7 * 24 * 3600, updateAge: 24 * 3600 },
+  // Sign-in / 2FA rate limits are src/proxy.ts (doc 26), one documented mechanism instead of two.
+  rateLimit: { enabled: false },
   // Profile and keys are admin-managed through audited domain functions (src/server/users),
   // never self-service over HTTP. Server-side auth.api calls are unaffected.
   disabledPaths: ["/update-user", "/change-email", "/delete-user", "/api-key/create", "/api-key/update"],

@@ -1,0 +1,54 @@
+# T10.4 production compose EXAMPLE (single VPS). Postgres is managed (see
+# docs/inventory/07-build/02-deploy.md) — DATABASE_URL points at it; nothing here stores data.
+#
+#   cp .env.example .env.prod   # fill real values from the secret store; never commit it
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod build
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm migrate
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d web worker
+#   # daily (host cron, e.g. 02:30 UTC):
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm backup
+#
+# Put a TLS-terminating reverse proxy (Caddy/nginx/the platform's LB) in front of `web`
+# that sets X-Forwarded-For (the rate limiter keys on its last hop, doc 26).
+x-env: &env
+  DATABASE_URL: ${DATABASE_URL:?}
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?}
+  BETTER_AUTH_URL: ${BETTER_AUTH_URL:?}
+  CORS_ORIGINS: ${CORS_ORIGINS:-}
+
+services:
+  web:
+    build: { context: ., target: web }
+    image: inventory-web
+    environment: *env
+    ports: ["127.0.0.1:3000:3000"] # only the reverse proxy reaches it
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp", "/app/.next/cache"]
+    security_opt: ["no-new-privileges:true"]
+
+  worker:
+    build: { context: ., target: worker }
+    image: inventory-worker
+    environment: *env
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+
+  migrate: # one-off per deploy, before `up`
+    image: inventory-worker
+    environment: *env
+    command: ["npx", "prisma", "migrate", "deploy"]
+    profiles: ["ops"]
+
+  backup: # one-off, scheduled daily by the host
+    image: postgres:18
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?}
+      BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:?}
+      BACKUP_DIR: /backups
+      RETENTION_DAYS: ${RETENTION_DAYS:-14}
+    volumes:
+      - ./scripts:/scripts:ro
+      - ${BACKUP_HOST_DIR:-./backups}:/backups
+    entrypoint: ["bash", "/scripts/backup.sh"]
+    profiles: ["ops"]

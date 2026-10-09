@@ -13,6 +13,7 @@ export const ERROR_STATUS = {
   conflict: 409,
   validation_error: 422,
   duplicate: 409,
+  rate_limited: 429, // doc 26 rate limits (src/proxy.ts)
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

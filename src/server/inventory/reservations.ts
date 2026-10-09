@@ -5,7 +5,7 @@ import { requirePermission, type Ctx } from "@/server/core/ctx";
 import { AppError } from "@/server/core/errors";
 import type { Tx } from "@/server/db";
 import { readSettings } from "@/server/settings/settings";
-import { dec, lockPositions, pickBins, postMovements, type Dec, type DecValue, type Leg } from "./post";
+import { checkRefs, dec, lockPositions, pickBins, postMovements, type Dec, type DecValue, type Leg } from "./post";
 import { perBin, takeSerials } from "./serials";
 
 // Reservations (doc 12). Lock order everywhere: reservation row → allocation rows → bin rows.
@@ -72,6 +72,10 @@ export async function reserve(tx: Tx, ctx: Ctx, input: ReserveInput) {
   }
   if (candidates.length === 0) throw new AppError("insufficient_stock", "Not enough available stock", { available: "0" });
 
+  // T10.2: everything that doesn't need the position lock happens before it, so the
+  // same-SKU queue moves faster (refs + warehouse share lock, as postMovements would).
+  const order = input.externalOrderId ? await orderRef(tx, ctx, channel ?? "pos", input.externalOrderId) : null;
+  await checkRefs(tx, ctx, candidates.map((b) => ({ variantId: variant.id, warehouseId: warehouse.id, binId: null, batchId: b })));
   const pos = await lockPositions(tx, ctx, candidates.map((b) => [variant.id, warehouse.id, b] as const));
   const ordered = candidates.map((b) => [...pos.values()].find((p) => p.batchId === b)!);
   const available = ordered.reduce((s, p) => s.plus(p.onHand.minus(p.reserved)), dec(0));
@@ -94,18 +98,22 @@ export async function reserve(tx: Tx, ctx: Ctx, input: ReserveInput) {
     left = left.minus(n);
   }
 
-  const order = input.externalOrderId ? await orderRef(tx, ctx, channel ?? "pos", input.externalOrderId) : null;
-  const reservation = await tx.reservation.create({
+  // Two statements instead of a nested create (+2 reads) while the lock is held.
+  const header = await tx.reservation.create({
     data: {
       companyId: ctx.companyId, variantId: variant.id, warehouseId: warehouse.id,
       qty: take.toFixed(4), expiresAt: new Date(Date.now() + ttl * 1000), ttlSeconds: ttl,
       salesOrderRefId: order?.id ?? null, createdBy: ctx.userId,
-      lines: { create: lines.map((l) => ({ batchId: l.batchId, qty: l.qty.toFixed(4) })) },
     },
-    include: { lines: true },
   });
+  const reservation = {
+    ...header,
+    lines: await tx.reservationLine.createManyAndReturn({
+      data: lines.map((l) => ({ reservationId: header.id, batchId: l.batchId, qty: l.qty.toFixed(4) })),
+    }),
+  };
   const posted = await postMovements(tx, ctx, {
-    sourceType: "reservation", sourceId: reservation.id, action: "reserve",
+    sourceType: "reservation", sourceId: reservation.id, action: "reserve", prelocked: pos,
     legs: reservation.lines.map((l, i) => ({
       type: "reservation", variantId: variant.id, warehouseId: warehouse.id, batchId: l.batchId,
       delta: { reserved: l.qty }, line: i + 1, reasonCode: "reserve",
