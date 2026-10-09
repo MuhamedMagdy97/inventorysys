@@ -129,7 +129,7 @@ export async function runReconciler(opts: Pick<RunOpts, "companyId"> = {}) {
         });
         await notify(tx, ctx, {
           type: "reconcile.drift", entityType: "company", entityId: c.id,
-          message: `Ledger reconciler found ${drift.length} drift row(s)`, link: "/admin/audit",
+          message: `Ledger reconciler found ${drift.length} drift row(s)`, link: "/admin/audit", permission: "audit.view",
         });
       });
     }

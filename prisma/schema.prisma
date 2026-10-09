@@ -56,6 +56,7 @@ model Company {
   quarantineLots     QuarantineLot[]
   inspections        Inspection[]
   evidence           Evidence[]
+  emailOutbox        EmailOutbox[]
 
   @@map("company")
 }
@@ -75,29 +76,31 @@ model User {
   salesChannel     SalesChannel? @map("sales_channel") // service users: the channel their keys act as (SO-06)
   failedLoginCount Int           @default(0) @map("failed_login_count")
   lockedUntil      DateTime?     @map("locked_until")
+  emailCategories  String[]      @default([]) @map("email_categories") // doc 17 N-02: email opt-in per category
   version          Int           @default(0)
   createdAt        DateTime      @default(now()) @map("created_at")
   updatedAt        DateTime      @default(now()) @updatedAt @map("updated_at")
 
-  company            Company           @relation(fields: [companyId], references: [id])
+  company            Company            @relation(fields: [companyId], references: [id])
   sessions           Session[]
   accounts           Account[]
   twofactors         TwoFactor[]
   roles              UserRole[]
   warehouses         UserWarehouse[]
-  managedWarehouses  Warehouse[]       @relation("WarehouseManager")
-  createdPos         PurchaseOrder[]   @relation("PoCreator")
-  poApprovals        PoApproval[]      @relation("PoApprover")
-  receipts           GoodsReceipt[]    @relation("ReceiptReceiver")
-  createdTransfers   Transfer[]        @relation("TransferCreator")
-  createdAdjustments StockAdjustment[] @relation("AdjustmentCreator")
-  approvals          Approval[]        @relation("Approver")
-  createdCounts      StockCount[]      @relation("CountCreator")
-  imports            ImportJob[]       @relation("ImportCreator")
-  purchaseReturns    PurchaseReturn[]  @relation("PurchaseReturnCreator")
-  salesReturns       SalesReturn[]     @relation("SalesReturnCreator")
-  inspections        Inspection[]      @relation("Inspector")
-  evidence           Evidence[]        @relation("EvidenceUploader")
+  managedWarehouses  Warehouse[]        @relation("WarehouseManager")
+  createdPos         PurchaseOrder[]    @relation("PoCreator")
+  poApprovals        PoApproval[]       @relation("PoApprover")
+  receipts           GoodsReceipt[]     @relation("ReceiptReceiver")
+  createdTransfers   Transfer[]         @relation("TransferCreator")
+  createdAdjustments StockAdjustment[]  @relation("AdjustmentCreator")
+  approvals          Approval[]         @relation("Approver")
+  createdCounts      StockCount[]       @relation("CountCreator")
+  imports            ImportJob[]        @relation("ImportCreator")
+  purchaseReturns    PurchaseReturn[]   @relation("PurchaseReturnCreator")
+  salesReturns       SalesReturn[]      @relation("SalesReturnCreator")
+  inspections        Inspection[]       @relation("Inspector")
+  evidence           Evidence[]         @relation("EvidenceUploader")
+  notificationReads  NotificationRead[]
 
   @@unique([companyId, id])
   @@index([companyId])
@@ -1277,8 +1280,8 @@ model SalesOrderRef {
   @@map("sales_order_ref")
 }
 
-// Doc 17, stored only (N-03); notification center + email in Part 9. user_id null =
-// everyone with access to warehouse_id (company-wide when that is null too).
+// Doc 17 (N-03). user_id null = everyone with access to warehouse_id (company-wide when
+// that is null too) holding `permission` (when set). Center + email: src/server/notifications.
 model Notification {
   id          String    @id @default(uuid(7))
   companyId   String    @map("company_id")
@@ -1290,13 +1293,54 @@ model Notification {
   message     String
   link        String?
   actorId     String    @map("actor_id")
-  readAt      DateTime? @map("read_at")
+  permission  String? // broadcast rows: only users holding this grant see them (doc 17 §3)
+  readAt      DateTime? @map("read_at") // direct rows; per-user read state lives in notification_read
+  emailedAt   DateTime? @map("emailed_at") // instant/digest email pass done (doc 17 §3)
   createdAt   DateTime  @default(now()) @map("created_at")
+
+  company Company            @relation(fields: [companyId], references: [id])
+  reads   NotificationRead[]
+
+  @@index([companyId, userId, readAt])
+  @@index([companyId, createdAt])
+  @@index([emailedAt])
+  @@map("notification")
+}
+
+model NotificationRead {
+  notificationId String   @map("notification_id")
+  userId         String   @map("user_id")
+  readAt         DateTime @default(now()) @map("read_at")
+
+  notification Notification @relation(fields: [notificationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@id([notificationId, userId])
+  @@index([userId])
+  @@map("notification_read")
+}
+
+// Every email the system produced (doc 17 §3). The transport is pluggable
+// (src/server/notifications/email.ts); without one, rows stay `stored` (dev/test).
+model EmailOutbox {
+  id              String    @id @default(uuid(7))
+  companyId       String    @map("company_id")
+  userId          String    @map("user_id")
+  toEmail         String    @map("to_email")
+  kind            String // instant | digest
+  subject         String
+  body            String
+  notificationIds String[]  @map("notification_ids")
+  status          String    @default("stored") // stored | sent | failed
+  error           String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  sentAt          DateTime? @map("sent_at")
 
   company Company @relation(fields: [companyId], references: [id])
 
-  @@index([companyId, userId, readAt])
-  @@map("notification")
+  @@index([companyId, createdAt])
+  @@index([status])
+  @@map("email_outbox")
 }
 
 // ───────────────────────── Part 6: transfers, adjustments, approvals ─────────────────────────

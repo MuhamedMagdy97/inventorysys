@@ -20,6 +20,7 @@ async function saveSettings(_: ActionState, form: FormData): Promise<ActionState
     barcodeAliasDays: Number(form.get("barcodeAliasDays")),
     approvalSlaHours: Number(form.get("approvalSlaHours")),
     countRecountPct: Number(form.get("countRecountPct")),
+    expiryAlertDays: Number(form.get("expiryAlertDays")),
   }));
 }
 
@@ -59,12 +60,16 @@ export default async function SettingsPage() {
               <input name="barcodeAliasDays" type="number" min={0} max={365} step={1} defaultValue={s.barcodeAliasDays} required className="input" />
             </label>
             <label className="label">
-              Approvals overdue after (hours)
+              Approvals escalate after (hours; reminder at half)
               <input name="approvalSlaHours" type="number" min={1} max={720} step={1} defaultValue={s.approvalSlaHours} required className="input" />
             </label>
             <label className="label">
               Count variance forcing a recount (%)
               <input name="countRecountPct" type="number" min={0} max={100} step="0.1" defaultValue={s.countRecountPct} required className="input" />
+            </label>
+            <label className="label">
+              Alert batches expiring within (days)
+              <input name="expiryAlertDays" type="number" min={1} max={365} step={1} defaultValue={s.expiryAlertDays} required className="input" />
             </label>
           </div>
           <p className="text-xs text-muted">Approval limits are set per role grant on the Roles page.</p>

@@ -42,3 +42,7 @@ yarn-error.log*
 next-env.d.ts
 
 /src/generated/prisma
+
+# Claude Code desktop: local preview config + agent worktrees
+.claude/launch.json
+.claude/worktrees/

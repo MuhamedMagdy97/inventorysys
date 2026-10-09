@@ -22,3 +22,15 @@ For each: purpose/audience/filters/columns/grouping/export (CSV+Excel in V1, PDF
 - **Product Movement (V1):** in/out net per variant.
 
 V1 = Summary, Ledger, Valuation, Low/Out, Damaged, Purchasing, Returns, Transfers, Product Movement. V1.5+ = rest.
+
+## 3. Build decisions (Part 9)
+- RP-01 **Scope:** every report and dashboard widget needs `reports.view` (dashboard: `inventory.view` or `reports.view`) and covers only the caller's warehouses; a requested warehouse outside scope → `forbidden`. Transfers (and the in-transit line) count when either end is in scope (TR-06). Export additionally needs `reports.export` and writes one `export` audit row (filters, scope, row count).
+- RP-02 **Sources:** reports only read. Quantities from `stock_balance` / `stock_allocation`, value from the cost layer (`variant_cost`, WAC × all physical buckets), history from `inventory_movement`. Valuation with an *as of* date is the INV-022 replay (`valueAt`); without one it is the live value, and both equal at *now*.
+- RP-03 **Valuation total** = Σ warehouse lines + the in-transit line (shipped value − value settled at the destination). With a product / category / brand filter the in-transit line is omitted (noted on the report). Category filters include sub-categories.
+- RP-04 **Low / out:** available = on hand − reserved per (SKU, warehouse); *out* = available ≤ 0, *low* = available ≤ `reorder_point` (variant_warehouse_settings). Archived / discontinued SKUs are left out.
+- RP-05 **Product movement:** physical units per movement row (on hand + blocked + damaged + expired), so bucket-to-bucket moves net to 0; putaways (within a warehouse) and reservation rows are skipped. Net over all time = current physical quantity.
+- RP-06 **Damaged:** damaged quantity now × current WAC, plus damage legs (Δ damaged > 0) in the period grouped by reason code.
+- RP-07 **Purchasing:** POs by status / currency; per supplier (non-draft, non-cancelled POs): fill % = received ÷ ordered, return % = returned ÷ received, lead time = order date → first non-reversed receipt, on time = first receipt ≤ expected date.
+- RP-08 **Returns:** purchase / customer returns by status + reason, inspection outcomes + dispositions, and rates from the ledger (purchase returns ÷ receipts, customer returns ÷ fulfilments, in units, for the period).
+- RP-09 **Export format:** CSV (UTF-8, formula-guarded, multi-section reports separated by a blank line and the section title). Native .xlsx export and async exports for very large reports are deferred (CSV opens in Excel; the ledger caps at 10 000 rows per run).
+- RP-10 **Dashboard:** "inventory value" is the valuation total incl. in transit (shown as a sub-line); "units" = on hand; "expiring" = batch positions with on hand > 0 expiring within 30 days; recent activity mixes the last 20 movements with audit rows (audit only with `audit.view`); alerts = expired / expiring ≤ 7 d, stockouts, transit variances awaiting approval, reconciler drift in the last 7 days.

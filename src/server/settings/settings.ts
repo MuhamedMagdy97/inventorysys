@@ -16,6 +16,7 @@ export const SettingsSchema = z.object({
   barcodeAliasDays: z.number().int().min(0).max(365), // P-CAT-02
   approvalSlaHours: z.number().int().min(1).max(720), // N-04: inbox flags older approvals as overdue
   countRecountPct: z.number().min(0).max(100), // doc 23: |variance| above this % of system qty forces a recount
+  expiryAlertDays: z.number().int().min(1).max(365), // doc 17 §1: daily "expiring" alert horizon (dashboard KPI stays 30 d, doc 16)
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -27,6 +28,7 @@ const DEFAULTS: Omit<Settings, "currency"> = {
   barcodeAliasDays: 30,
   approvalSlaHours: 48,
   countRecountPct: 10,
+  expiryAlertDays: 30,
 };
 
 // Internal read for domain code (no permission: callers already authorized their action).

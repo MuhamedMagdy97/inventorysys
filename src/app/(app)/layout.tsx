@@ -1,12 +1,14 @@
 import Link from "next/link";
 import { pageCtx } from "@/server/auth/page-ctx";
 import { db } from "@/server/db";
+import { listNotifications } from "@/server/notifications/center";
 import { signOutAction } from "../login/actions";
 
 // Doc 25 shell. Nav entries are hidden without their grant (cosmetic only — every
 // page and action re-checks through its domain function).
 const NAV = [
-  { href: "/", label: "Home", grant: null },
+  { href: "/", label: "Dashboard", grant: null },
+  { href: "/reports", label: "Reports", grant: "reports.view" },
   { href: "/products", label: "Products", grant: "products.view" },
   { href: "/suppliers", label: "Suppliers", grant: "suppliers.view" },
   { href: "/purchase-orders", label: "Purchasing", grant: ["purchases.view", "inventory.receive"] },
@@ -27,16 +29,21 @@ const NAV = [
 
 export default async function AppLayout({ children }: LayoutProps<"/">) {
   const ctx = await pageCtx();
-  const [user, company] = await Promise.all([
+  const [user, company, unread] = await Promise.all([
     db.user.findUniqueOrThrow({ where: { id: ctx.userId }, select: { name: true, email: true } }),
     db.company.findUniqueOrThrow({ where: { id: ctx.companyId }, select: { name: true } }),
+    listNotifications(ctx, { page: 1, perPage: 1, unreadOnly: true }).then((n) => n.unread),
   ]);
   return (
     <div className="flex min-h-full flex-1 flex-col">
       <header className="flex items-center justify-between gap-4 border-b border-border bg-surface px-4 py-3">
         <span className="font-semibold">{company.name}</span>
+        <form action="/search" role="search" className="min-w-0 flex-1 sm:max-w-sm">
+          <input name="q" placeholder="Search SKU, PO, batch, serial…" aria-label="Search" className="input" />
+        </form>
         <div className="flex items-center gap-3 text-sm">
-          <span className="hidden text-muted sm:inline">{user.name} · {user.email}</span>
+          <Link href="/notifications" className="link whitespace-nowrap">Notifications{unread ? ` (${unread})` : ""}</Link>
+          <span className="hidden text-muted lg:inline">{user.name} · {user.email}</span>
           <form action={signOutAction}><button className="btn">Sign out</button></form>
         </div>
       </header>
