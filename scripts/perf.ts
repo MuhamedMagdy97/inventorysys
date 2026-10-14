@@ -5,6 +5,7 @@
 // HTTP/JSON overhead is not included (a few ms); the DB path is what the targets guard.
 //
 //   PERF_CONFIRM_DB=inventory_p10 npx tsx --env-file=.env scripts/perf.ts [--variants=20000] [--receipts=100] [--skip-seed]
+//     [--fuzz=40] [--no-measure]   T10.1 fuzz phase: rounds of 50 concurrent ops, then reconcile
 //
 // The seed writes stock only through postMovements (ledger rule); catalog rows use
 // createMany for speed. Re-running without --skip-seed adds another company.
@@ -15,7 +16,9 @@ import { db, transaction } from "@/server/db";
 import { getAvailability } from "@/server/inventory/availability";
 import { postMovements, type Leg } from "@/server/inventory/post";
 import { listMovements } from "@/server/inventory/queries";
-import { reserve } from "@/server/inventory/reservations";
+import { reconcile } from "@/server/inventory/reconcile";
+import { cancel, expireReservation, fulfil, release, reserve } from "@/server/inventory/reservations";
+import { AppError } from "@/server/core/errors";
 import { seedCompany } from "@/server/seed";
 import { buildCtx } from "@/server/auth/session-ctx";
 
@@ -182,11 +185,91 @@ async function explain(s: Seeded) {
   }
 }
 
+// T10.1 fuzz at volume: random concurrent reserve/fulfil/release/cancel/expire/adjust/
+// putaway on a small hot set (max contention) inside the big ledger, plus simulated
+// crashes after a posting (must roll back whole). Pass = only spec error codes and the
+// reconciler (ledger replay, reserved = open lines, I-02 no oversell) is clean.
+async function fuzz(s: Seeded, rounds: number) {
+  const ctx = await buildCtx(s.adminId, { requestId: "fuzz", channel: "system" });
+  let seed = 7_654_321; // seeded → a failure is reproducible
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+  const pick = <T>(xs: T[]) => xs[Math.floor(rnd() * xs.length)];
+  const qty = () => String(1 + Math.floor(rnd() * 4));
+  const bins = await db.bin.findMany({ where: { warehouseId: { in: s.warehouses.map((w) => w.id) }, code: { in: ["MAIN", "RECV"] } } });
+  const bin = (wh: string, code: string) => bins.find((b) => b.warehouseId === wh && b.code === code)!.id;
+  const hot = s.variantIds.slice(1, 21).flatMap((v) => s.warehouses.map((w) => ({ v, wh: w.id })));
+  const open: string[] = [];
+  const crash = new Error("simulated crash");
+
+  const ops: (() => Promise<unknown>)[] = [
+    async () => {
+      const p = pick(hot);
+      const r = await transaction((tx) => reserve(tx, ctx, { variantId: p.v, warehouseId: p.wh, qty: qty(), allowPartial: rnd() < 0.5 }));
+      open.push(r.reservation.id);
+    },
+    async () => {
+      const id = pick(open); if (!id) return;
+      const { version } = await db.reservation.findUniqueOrThrow({ where: { id } });
+      await transaction((tx) => fulfil(tx, ctx, { reservationId: id, version, qty: rnd() < 0.5 ? undefined : "1" }));
+    },
+    async () => {
+      const id = pick(open); if (!id) return;
+      const { version } = await db.reservation.findUniqueOrThrow({ where: { id } });
+      await transaction((tx) => (rnd() < 0.5 ? release(tx, ctx, { reservationId: id, version, qty: "1" }) : cancel(tx, ctx, { reservationId: id, version })));
+    },
+    async () => {
+      const id = pick(open); if (!id) return;
+      await transaction((tx) => expireReservation(tx, ctx, { reservationId: id, asOf: new Date(Date.now() + 86_400_000) }));
+    },
+    async () => {
+      const p = pick(hot);
+      const type = pick(["adjustment_in", "adjustment_out", "damage", "purchase_receipt"] as const);
+      const q = qty();
+      const delta = type === "damage" ? { onHand: `-${q}`, damaged: q } : { onHand: type === "adjustment_out" ? `-${q}` : q };
+      await transaction(async (tx) => {
+        await postMovements(tx, ctx, {
+          sourceType: "fuzz", sourceId: crypto.randomUUID(),
+          legs: [{ type, variantId: p.v, warehouseId: p.wh, binId: bin(p.wh, pick(["MAIN", "RECV"])), delta, unitCost: type === "purchase_receipt" ? String(1 + Math.floor(rnd() * 9)) : undefined, line: 1, reasonCode: "fuzz" }],
+        });
+        if (rnd() < 0.15) throw crash; // killed after the posting, before COMMIT
+      });
+    },
+    async () => {
+      const p = pick(hot);
+      const q = qty();
+      await transaction((tx) => postMovements(tx, ctx, {
+        sourceType: "fuzz_putaway", sourceId: crypto.randomUUID(),
+        legs: [
+          { type: "putaway_out", variantId: p.v, warehouseId: p.wh, binId: bin(p.wh, "RECV"), delta: { onHand: `-${q}` }, line: 1, reasonCode: "fuzz" },
+          { type: "putaway_in", variantId: p.v, warehouseId: p.wh, binId: bin(p.wh, "MAIN"), delta: { onHand: q }, line: 2, reasonCode: "fuzz" },
+        ],
+      }));
+    },
+  ];
+
+  const ALLOWED = new Set(["ok", "crash", "insufficient_stock", "reserved_conflict", "version_conflict", "invalid_transition", "reservation_expired", "validation_error"]);
+  const tally: Record<string, number> = {};
+  const t0 = performance.now();
+  for (let r = 0; r < rounds; r++) {
+    const res = await Promise.allSettled(Array.from({ length: 50 }, () => pick(ops)()));
+    for (const x of res) {
+      const code = x.status === "fulfilled" ? "ok" : x.reason === crash ? "crash" : x.reason instanceof AppError ? x.reason.code : `UNEXPECTED: ${x.reason}`;
+      tally[code] = (tally[code] ?? 0) + 1;
+    }
+  }
+  const t1 = performance.now();
+  const drift = await reconcile(ctx);
+  const unexpected = Object.keys(tally).filter((c) => !ALLOWED.has(c));
+  console.log(JSON.stringify({ fuzz: { rounds, ops: rounds * 50, seconds: +((t1 - t0) / 1000).toFixed(1), tally, reconcile_seconds: +((performance.now() - t1) / 1000).toFixed(1), drift: drift.slice(0, 5), driftCount: drift.length } }, null, 2));
+  if (unexpected.length || drift.length) throw new Error(`FUZZ FAILED: unexpected=${unexpected.join(",")} drift=${drift.length}`);
+}
+
 async function main() {
   const s = process.argv.includes("--skip-seed") ? await latest() : await seed();
   await db.$executeRawUnsafe("ANALYZE");
-  console.log(JSON.stringify(await measure(s), null, 2));
+  if (!process.argv.includes("--no-measure")) console.log(JSON.stringify(await measure(s), null, 2));
   if (process.argv.includes("--explain")) await explain(s);
+  if (arg("fuzz", 0) > 0) await fuzz(s, arg("fuzz", 0));
   await db.$disconnect();
 }
 

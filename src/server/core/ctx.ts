@@ -21,10 +21,8 @@ export type Ctx = {
 
 // Doc 26 step-up: sensitive grants need a sign-in within this window on web sessions.
 export const STEP_UP_MINUTES = 30;
-const SENSITIVE = new Set([
-  "inventory.count_apply", "inventory.adjust_apply", "inventory.receive", "inventory.transfer_ship",
-  "inventory.transfer_receive", "purchases.return_ship", "sales.return_receive", "users.manage", "roles.manage",
-]);
+// Approvals + user/role admin only; floor operations (receive/ship/apply) are exempt (doc 26).
+const SENSITIVE = new Set(["users.manage", "roles.manage"]);
 const isSensitive = (p: string) => SENSITIVE.has(p) || p.endsWith(".approve") || p.endsWith("_approve");
 
 // Only interactive sessions step up (API keys and jobs are exempt), and only when every
