@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
   resolve: {
@@ -14,5 +14,6 @@ export default defineConfig({
     env: { DATABASE_URL: process.env.TEST_DATABASE_URL ?? "" },
     // One shared test DB → files must not run in parallel against it.
     fileParallelism: false,
+    exclude: [...configDefaults.exclude, ".claude/**"], // agent worktrees hold stale copies of the suite
   },
 });

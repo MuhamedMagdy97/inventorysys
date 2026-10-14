@@ -60,6 +60,7 @@ test("T10.3: sensitive grants need a sign-in within 30 min on web sessions (step
   await expect(requirePermission(stale, "purchases.approve")).rejects.toEqual(forbidden("step_up_required"));
   await expect(requirePermission(stale, ["purchases.approve", "purchases.view"])).resolves.toBeUndefined(); // a read
   await expect(requirePermission(stale, "purchases.create")).resolves.toBeUndefined(); // not sensitive
+  await expect(requirePermission(stale, "purchases.return_ship")).resolves.toBeUndefined(); // floor op: no step-up
   await expect(requirePermission({ ...stale, channel: "api", authAt: undefined }, "purchases.approve")).resolves.toBeUndefined();
   expect((await audits("purchases.approve", "access.denied")).at(-1)?.after).toMatchObject({ reason: "step_up_required" });
 
