@@ -5,7 +5,7 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
 import { twoFactor } from "better-auth/plugins";
 import { writeAudit } from "@/server/core/audit";
-import { db } from "@/server/db";
+import { db, type Tx } from "@/server/db";
 
 // Doc 02 §6. Users are created by admins (src/server/users), never by self sign-up.
 export const MAX_FAILED_LOGINS = 5;
@@ -16,7 +16,11 @@ export const auth = betterAuth({
   database: prismaAdapter(db, { provider: "postgresql" }),
   advanced: { database: { generateId: false } }, // Prisma's @default(uuid(7))
   emailAndPassword: { enabled: true, disableSignUp: true, minPasswordLength: 10 },
-  session: { expiresIn: 7 * 24 * 3600, updateAge: 24 * 3600 },
+  session: {
+    expiresIn: 7 * 24 * 3600, updateAge: 24 * 3600,
+    // Doc 26 step-up: set only by src/server/auth/step-up.ts, never from client input.
+    additionalFields: { stepUpAt: { type: "date", required: false, input: false } },
+  },
   // Sign-in / 2FA rate limits are src/proxy.ts (doc 26), one documented mechanism instead of two.
   rateLimit: { enabled: false },
   // Profile and keys are admin-managed through audited domain functions (src/server/users),
@@ -51,24 +55,30 @@ export const auth = betterAuth({
       if (!user) return; // unknown email: nothing to count, no company to audit under
       const failed = c.context.returned instanceof APIError;
       if (failed && c.context.returned instanceof APIError && c.context.returned.body?.code === "ACCOUNT_LOCKED") return;
-      await db.$transaction(async (tx) => {
-        const count = failed ? user.failedLoginCount + 1 : 0;
-        const lock = failed && count >= MAX_FAILED_LOGINS;
-        await tx.user.update({
-          where: { id: user.id },
-          data: { failedLoginCount: lock ? 0 : count, lockedUntil: lock ? new Date(Date.now() + LOCK_MINUTES * 60_000) : failed ? undefined : null },
-        });
-        const ctx = { companyId: user.companyId, userId: user.id, requestId: crypto.randomUUID(), channel: "web" as const };
-        await writeAudit(tx, ctx, {
-          action: lock ? "auth.locked" : failed ? "auth.login_failed" : "auth.login",
-          entityType: "user",
-          entityId: user.id,
-          after: { failedCount: count, ip: c.request?.headers.get("x-forwarded-for") ?? null },
-        });
-      });
+      await db.$transaction((tx) => recordLoginAttempt(tx, user, !failed, c.request?.headers.get("x-forwarded-for") ?? null, "auth.login"));
     }),
   },
 });
+
+// The 5-fail lockout counter + audit, shared by sign-in and step-up re-verify (doc 02 §6, doc 26).
+// `action` on success, `<action>_failed` on a failure, `auth.locked` on the failure that locks.
+export async function recordLoginAttempt(
+  tx: Tx, user: { id: string; companyId: string; failedLoginCount: number }, ok: boolean, ip: string | null, action: string,
+) {
+  const count = ok ? 0 : user.failedLoginCount + 1;
+  const lock = !ok && count >= MAX_FAILED_LOGINS;
+  await tx.user.update({
+    where: { id: user.id },
+    data: { failedLoginCount: lock ? 0 : count, lockedUntil: lock ? new Date(Date.now() + LOCK_MINUTES * 60_000) : ok ? null : undefined },
+  });
+  const ctx = { companyId: user.companyId, userId: user.id, requestId: crypto.randomUUID(), channel: "web" as const };
+  await writeAudit(tx, ctx, {
+    action: lock ? "auth.locked" : ok ? action : `${action}_failed`,
+    entityType: "user",
+    entityId: user.id,
+    after: { failedCount: count, ip },
+  });
+}
 
 function findLoginUser(email: unknown) {
   return typeof email === "string" ? db.user.findUnique({ where: { email: email.toLowerCase() } }) : null;

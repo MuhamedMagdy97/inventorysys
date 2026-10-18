@@ -3,6 +3,7 @@ import { diff, listAudit } from "@/server/audit/queries";
 import { auth } from "@/server/auth/auth";
 import { ROLE_SEEDS } from "@/server/auth/grants";
 import { buildCtx, requestCtx, sessionCtx } from "@/server/auth/session-ctx";
+import { stepUp } from "@/server/auth/step-up";
 import { requireNotCreator, requirePermission, type Ctx } from "@/server/core/ctx";
 import { db, transaction } from "@/server/db";
 import { postMovements } from "@/server/inventory/post";
@@ -66,6 +67,30 @@ test("T10.3: sensitive grants need a sign-in within 30 min on web sessions (step
 
   const again = await sessionCtx(new Headers((await u.signIn()).headers), "r3"); // re-auth = new session
   await expect(requirePermission(again, "purchases.approve")).resolves.toBeUndefined();
+});
+
+test("T12.3: step-up re-verify refreshes THIS session only; wrong password is refused, counted and audited", async () => {
+  const u = await loginUser(w, "purchasing_manager");
+  const s1 = new Headers((await u.signIn()).headers);
+  const s2 = new Headers((await u.signIn()).headers); // a second session of the same user
+  await db.session.updateMany({ where: { userId: u.user.id }, data: { createdAt: new Date(Date.now() - 31 * 60_000) } });
+  await expect(requirePermission(await sessionCtx(s1, "r1"), "purchases.approve")).rejects.toEqual(forbidden("step_up_required"));
+
+  await expect(stepUp(s1, { password: "wrong-password!" })).rejects.toEqual(forbidden("step_up_failed"));
+  expect((await audits(u.user.id, "auth.step_up_failed")).length).toBe(1);
+  expect((await db.user.findUniqueOrThrow({ where: { id: u.user.id } })).failedLoginCount).toBe(1); // 5-fail lockout counter
+  await expect(requirePermission(await sessionCtx(s1, "r2"), "purchases.approve")).rejects.toEqual(forbidden("step_up_required"));
+
+  await stepUp(s1, { password: u.password });
+  expect((await audits(u.user.id, "auth.step_up")).length).toBe(1);
+  expect((await db.user.findUniqueOrThrow({ where: { id: u.user.id } })).failedLoginCount).toBe(0);
+  await expect(requirePermission(await sessionCtx(s1, "r3"), "purchases.approve")).resolves.toBeUndefined();
+  await expect(requirePermission(await sessionCtx(s2, "r4"), "purchases.approve")).rejects.toEqual(forbidden("step_up_required"));
+
+  // TOTP enrolled: the right password alone is not enough.
+  await db.user.update({ where: { id: u.user.id }, data: { twoFactorEnabled: true } });
+  await expect(stepUp(s2, { password: u.password })).rejects.toEqual(forbidden("step_up_failed"));
+  await expect(stepUp(s2, { password: u.password, code: "000000" })).rejects.toEqual(forbidden("step_up_failed"));
 });
 
 test("T2.1: lockout after 5 failed passwords; admin unlock restores access", async () => {

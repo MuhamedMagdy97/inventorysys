@@ -599,6 +599,7 @@ model Session {
   updatedAt DateTime @updatedAt @map("updated_at")
   ipAddress String?  @map("ip_address")
   userAgent String?  @map("user_agent")
+  stepUpAt  DateTime? @map("step_up_at") // doc 26: last re-verify on this session
   userId    String   @map("user_id")
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 

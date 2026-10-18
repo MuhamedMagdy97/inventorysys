@@ -85,7 +85,7 @@ test("every denial above was audited as access.denied on warehouse B", async () 
   expect(denied).toBe(2 * 7); // 3 reads + 1 reserve + 3 reservation actions, per auth path
 });
 
-test("every API route (except health/auth) builds ctx from the request", () => {
+test("every API route (except health/auth/step-up) builds ctx from the request", () => {
   const routes: string[] = [];
   const walk = (dir: string) => readdirSync(dir).forEach((f) => {
     const p = join(dir, f);
@@ -93,7 +93,8 @@ test("every API route (except health/auth) builds ctx from the request", () => {
     else if (f === "route.ts") routes.push(p);
   });
   walk(join(process.cwd(), "src/app/api"));
-  const open = routes.filter((r) => !/[\\/]api[\\/](health|auth)[\\/]/.test(r));
+  // step-up re-verifies the session itself (src/server/auth/step-up.ts); it runs no domain fn.
+  const open = routes.filter((r) => !/[\\/]api[\\/](health|auth|step-up)[\\/]/.test(r));
   expect(open.length).toBeGreaterThanOrEqual(5);
   // `mutate(req, requestId, …)` builds it too (src/app/api/mutate.ts).
   for (const r of open) expect(readFileSync(r, "utf8"), r).toMatch(/requestCtx\(req, requestId\)|mutate\(req, requestId,/);
