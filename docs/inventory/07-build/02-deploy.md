@@ -7,13 +7,15 @@ Binding for production. Nothing here is provisioned automatically; the owner cre
 | Piece | Where | Notes |
 |---|---|---|
 | `web` | `Dockerfile` target `web` (Next standalone `server.js`, non-root `node`, port 3000, `/api/health` healthcheck) | Behind one TLS reverse proxy that sets `X-Forwarded-For` (rate limiter keys on the last hop). Safe to run 1–n replicas: rate-limit counters are shared in Postgres (T12.1). |
-| `worker` | `Dockerfile` target `worker` (pg-boss jobs via tsx, non-root) | Exactly the jobs in `src/worker/index.ts`; safe to run 1–n (stately queues). |
-| migrations | `docker compose -f docker-compose.prod.yml run --rm migrate` (`prisma migrate deploy` from the worker image) | Before every `up`. Never `migrate dev` in production. |
+| `worker` | `Dockerfile` target `worker`: `npm run build:worker` (esbuild) bundles `src/worker/index.ts` and every dependency (generated Prisma client with its inlined query-compiler wasm, adapter-pg, pg-boss) into one `dist/worker.mjs` (+ source map); the image is the Node base + that file, no `node_modules`, non-root `node` | Exactly the jobs in `src/worker/index.ts`; safe to run 1–n (stately queues). |
+| migrations | `docker compose -f docker-compose.prod.yml run --rm migrate` — `Dockerfile` target `migrate` (image `inventory-migrate`): only the prisma CLI + dotenv (pruned from the lockfile tree), `prisma/`, `prisma.config.ts`; runs `prisma migrate deploy` | Before every `up`. Never `migrate dev` in production. |
 | Postgres | **Managed** (see §2) | `DATABASE_URL` only; TLS on. |
 | backups | `scripts/backup.sh` daily + provider PITR | §3. |
 | `clamav` (optional) | `clamav/clamav` image, compose profile `scan` | Upload virus scan (doc 26). `docker compose -f docker-compose.prod.yml --env-file .env.prod --profile scan up -d clamav` (first start downloads signatures, 1–2 min; ~1.5 GB RAM), set `CLAMD_HOST=clamav` in `.env.prod`, then `up -d web`. Uploads fail closed while it is down (`scan_unavailable`): check `docker compose logs clamav` (freshclam updates). |
 
-Example: `docker-compose.prod.yml`. Env (all required unless noted): `DATABASE_URL`, `BETTER_AUTH_SECRET` (≥ 32 chars, `openssl rand -hex 32`), `BETTER_AUTH_URL` (public https URL), `CORS_ORIGINS` (optional), `CLAMD_HOST` / `CLAMD_PORT` (optional, upload virus scan), `BACKUP_PASSPHRASE` (backup job only). Web and worker validate env at boot and refuse to start on a bad or placeholder value (`src/server/env.ts`).
+Image sizes (disk / compressed, 2026-10-18): web 441 MB / 107 MB; worker **363 MB / 88 MB** (was 1.71 GB / 371 MB with tsx + full `node_modules`; ~340 MB of it is the Node base); migrate 668 MB / 149 MB (the prisma CLI tree is ~257 MB; one-off, never left running).
+
+Example: `docker-compose.prod.yml` (`--profile ops build` also builds `migrate`). Env (all required unless noted): `DATABASE_URL`, `BETTER_AUTH_SECRET` (≥ 32 chars, `openssl rand -hex 32`), `BETTER_AUTH_URL` (public https URL), `CORS_ORIGINS` (optional), `CLAMD_HOST` / `CLAMD_PORT` (optional, upload virus scan), `BACKUP_PASSPHRASE` (backup job only). Web and worker validate env at boot and refuse to start on a bad or placeholder value (`src/server/env.ts`).
 
 ## 2. Managed Postgres choice
 
