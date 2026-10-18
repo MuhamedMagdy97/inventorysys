@@ -5,6 +5,7 @@ import { Denied } from "@/app/ui/denied";
 import { pageData } from "@/server/auth/page-ctx";
 import { inScope } from "@/server/core/ctx";
 import { db } from "@/server/db";
+import { fefoView } from "@/server/inventory/tracking";
 import { getTransfer } from "@/server/inventory/transfers";
 import { receiveTransferAction, rejectTransferAction, shipAction, transferMoveAction, varianceAction } from "../actions";
 
@@ -22,10 +23,15 @@ export default async function TransferPage({ params }: PageProps<"/transfers/[id
       where: { warehouseId: t.toWarehouseId, archived: false, type: { in: ["receiving", "sellable"] } },
       orderBy: [{ isDefaultReceiving: "desc" }, { code: "asc" }], select: { id: true, code: true },
     });
-    return { t, bins };
+    // T11.5: source FEFO order per batch-tracked line while it can still ship (doc 25).
+    const fefo = new Map(t.status === "approved" && ctx.permissions.has("inventory.view") && inScope(ctx, t.fromWarehouseId)
+      ? await Promise.all([...new Set(t.lines.filter((l) => l.batchId).map((l) => l.variantId))].map(async (v) =>
+        [v, (await fefoView(ctx, { variantId: v, warehouseId: t.fromWarehouseId })).rows.filter((r) => r.pickRank)] as const))
+      : []);
+    return { t, bins, fefo };
   });
   if ("denied" in res) return <Denied message={res.denied} />;
-  const { t, bins } = res.data;
+  const { t, bins, fefo } = res.data;
   const ctx = res.ctx;
   const can = (p: string, wh: string) => ctx.permissions.has(p) && inScope(ctx, wh);
   const either = (p: string) => can(p, t.fromWarehouseId) || can(p, t.toWarehouseId);
@@ -97,13 +103,21 @@ export default async function TransferPage({ params }: PageProps<"/transfers/[id
           <ActionForm action={shipAction.bind(null, t.id, key)} submit="Confirm shipment">
             {version}
             <table className="table">
-              <thead><tr><th>SKU</th><th>Qty to ship</th><th>Serials (serialized items)</th></tr></thead>
+              <thead><tr><th>SKU</th><th>Qty to ship</th><th>Serials (serialized items)</th><th>FEFO at {t.fromWarehouse.code}</th></tr></thead>
               <tbody>
                 {t.lines.map((l, i) => (
                   <tr key={l.id}>
                     <td className="font-mono text-xs"><input type="hidden" name={`ship.${i}.lineId`} value={l.id} />{l.variant.sku}</td>
                     <td><input name={`ship.${i}.qty`} defaultValue={l.qtyRequested.toString()} inputMode="decimal" aria-label={`Ship quantity for ${l.variant.sku}`} className="input w-24" /></td>
                     <td>{l.variant.product.isSerialized && <input name={`ship.${i}.serials`} placeholder="S1, S2 …" aria-label={`Serials for ${l.variant.sku}`} className="input w-64" />}</td>
+                    <td className="text-xs">
+                      {fefo.get(l.variantId)?.map((r) => (
+                        <span key={r.batchId} className={`block ${r.batchId === l.batchId ? "font-semibold" : "text-muted"}`}>
+                          {r.pickRank}. {r.batchNo} · {r.expiryDate?.toISOString().slice(0, 10) ?? "no expiry"} · {n(r.available)} avail{r.batchId === l.batchId && " ← this line"}
+                        </span>
+                      ))}
+                      {fefo.get(l.variantId)?.some((r) => r.pickRank! < (fefo.get(l.variantId)!.find((x) => x.batchId === l.batchId)?.pickRank ?? 0) && Number(r.available) > 0) && <span role="status" className="text-amber-700">A batch ahead in FEFO order has stock available.</span>}
+                    </td>
                   </tr>
                 ))}
               </tbody>

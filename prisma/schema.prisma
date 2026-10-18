@@ -1870,6 +1870,25 @@ model Evidence {
   @@map("evidence")
 }
 
+// ───────────────────────── Part 11: serial history (doc 14 §6) ─────────────────────────
+
+// Append-only. One row per insert / status / warehouse / bin change of a serial_unit,
+// written by the trigger `serial_unit_event_log` in the changing transaction.
+model SerialUnitEvent {
+  id           String        @id @default(uuid(7))
+  companyId    String        @map("company_id")
+  serialUnitId String        @map("serial_unit_id")
+  fromStatus   SerialStatus? @map("from_status")
+  toStatus     SerialStatus  @map("to_status")
+  warehouseId  String        @map("warehouse_id")
+  binId        String?       @map("bin_id")
+  baseline     Boolean       @default(false) // backfilled state at migration time, not a real transition
+  at           DateTime      @default(now())
+
+  @@index([serialUnitId, id])
+  @@map("serial_unit_event")
+}
+
 // ───────────────────────── Part 11: outbound webhooks ─────────────────────────
 // Doc 24 "Webhooks — build decisions", doc 26 (SSRF guard, secret shown once).
 // No relation to Company on purpose (shared model left untouched; companies are never deleted).
