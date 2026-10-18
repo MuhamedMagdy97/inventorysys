@@ -1,11 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { hit } from "@/server/rate-limit";
 
 // Doc 26 request guards for /api, in one place so route handlers stay untouched:
 // rate limits (sign-in, reserve, lookup), CORS allowlist, and an Origin check on
 // state-changing requests (CSRF defence in depth on top of SameSite cookies).
 // Static security headers live in next.config.ts.
 
-const WINDOW_MS = 60_000;
 type Rule = { match: (path: string) => boolean; limit: number; by: "ip" | "client" };
 export const RULES: Rule[] = [
   // Sign-in + TOTP verify: per IP. Per-account brute force is also stopped by the 5-fail lockout.
@@ -14,16 +14,14 @@ export const RULES: Rule[] = [
   { match: (p) => p === "/api/products/lookup", limit: 600, by: "client" }, // scan bursts
 ];
 
-// ponytail: fixed-window counters in process memory — per instance, reset on restart.
-// Fine for one web container; with several replicas move the counter to Postgres/Redis.
-const hits = new Map<string, { count: number; resetAt: number }>();
-
-export function hit(key: string, limit: number, now = Date.now()): { ok: true } | { ok: false; retryAfter: number } {
-  if (hits.size > 50_000) for (const [k, v] of hits) if (v.resetAt <= now) hits.delete(k);
-  let h = hits.get(key);
-  if (!h || h.resetAt <= now) hits.set(key, (h = { count: 0, resetAt: now + WINDOW_MS }));
-  h.count++;
-  return h.count <= limit ? { ok: true } : { ok: false, retryAfter: Math.ceil((h.resetAt - now) / 1000) };
+// Counters are shared in Postgres (src/server/rate-limit.ts). Fail-open on a DB error (doc 26).
+async function limited(key: string, limit: number) {
+  try {
+    return await hit(key, limit);
+  } catch (e) {
+    console.error("rate-limit store unavailable, allowing request", e);
+    return { ok: true } as const;
+  }
 }
 
 // ponytail: the last X-Forwarded-For hop is the address our own reverse proxy saw; with no
@@ -62,7 +60,7 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "600",
 };
 
-export function proxy(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const path = req.nextUrl.pathname;  const origin = req.headers.get("origin");
   const crossAllowed = !!origin && !sameOrigin(req, origin) && allowlist().includes(origin);
   const cors: Record<string, string> = crossAllowed ? { "Access-Control-Allow-Origin": origin!, Vary: "Origin" } : {};
@@ -77,7 +75,7 @@ export function proxy(req: NextRequest) {
   if (mutating) {
     const rule = RULES.find((r) => r.match(path));
     if (rule) {
-      const res = hit(`${path}|${rule.by === "ip" ? `ip:${ip(req)}` : client(req)}`, rule.limit);
+      const res = await limited(`${path}|${rule.by === "ip" ? `ip:${ip(req)}` : client(req)}`, rule.limit);
       if (!res.ok) {
         return error(req, 429, "rate_limited", "Too many requests", { retryAfterSeconds: res.retryAfter },
           { ...cors, "Retry-After": String(res.retryAfter) });
