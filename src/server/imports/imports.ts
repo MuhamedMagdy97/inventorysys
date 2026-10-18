@@ -23,6 +23,9 @@ const COLUMNS: Record<ImportType, { required: string[]; optional: string[] }> = 
 };
 
 class Rollback extends Error {}
+// A 10 000-row file runs row by row (~6 ms/row for products, more for opening lines), far past
+// the default 30 s. Imports only insert (no stock-row locks until approval), so a long one is safe.
+const IMPORT_TIMEOUT = 10 * 60_000;
 
 type Job = { type: ImportType; warehouseId: string | null; asOf: Date | null };
 
@@ -105,7 +108,7 @@ export async function previewImport(
   await transaction(async (tx) => {
     errors = (await run(tx, ctx, job, rows, false)).errors;
     throw new Rollback();
-  }).catch((e) => { if (!(e instanceof Rollback)) throw e; });
+  }, IMPORT_TIMEOUT).catch((e) => { if (!(e instanceof Rollback)) throw e; });
 
   return transaction(async (tx) => {
     const created = await tx.importJob.create({
@@ -155,7 +158,7 @@ export async function confirmImport(ctx: Ctx, input: { id: string; version: numb
       await finish(tx, "completed", { ...result, imported: rows.length, skipped: bad.size });
       await writeAudit(tx, ctx, { action: "import.confirm", entityType: "import_job", entityId: j.id, warehouseId: j.warehouseId, after: { mode, imported: rows.length, skipped: bad.size, result } });
       return tx.importJob.findUniqueOrThrow({ where: { id: j.id } });
-    });
+    }, IMPORT_TIMEOUT);
   } catch (e) {
     const err = toAppError(e);
     if (["not_found", "version_conflict", "invalid_transition", "forbidden"].includes(err.code)) throw err;
