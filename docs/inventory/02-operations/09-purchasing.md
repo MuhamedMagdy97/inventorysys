@@ -13,7 +13,7 @@
 - PO-04: Receiving allowed only in `ordered|partially_received`. Each receipt validates `received_total ≤ ordered + tolerance` (tolerance default 0, configurable % per supplier).
 - PO-05: Backorder = remaining `ordered − received` stays open until closed/cancelled; closing with remainder requires reason.
 - PO-06: Multi-warehouse PO forbidden — one receiving warehouse per PO (split POs instead).
-- PO-07: Discounts/tax/shipping at header + line; landed-cost allocation to unit cost is V1.5 (V1 stores them for display + valuation-inclusive reporting only).
+- PO-07: Discounts/tax/shipping at header + line; landed-cost allocation to unit cost is V1.5 (V1 stores them for display + valuation-inclusive reporting only); V1.5 allocates charges entered on a landed-cost document per receipt (doc 15 §1.1) — PO header amounts stay display-only.
 - PO-08: PO number immutable; supplier change allowed only in draft.
 
 ## 4. Financial Fields (V1)
