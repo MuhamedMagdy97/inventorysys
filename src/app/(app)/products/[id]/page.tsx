@@ -7,14 +7,16 @@ import { pageData } from "@/server/auth/page-ctx";
 import { checkBarcode, getProduct } from "@/server/catalog/catalog";
 import { listBrands, listCategories, listUoms } from "@/server/catalog/taxonomy";
 import { listMovements, stockSummary } from "@/server/inventory/queries";
+import { fefoView, listSerials } from "@/server/inventory/tracking";
 import { listWarehouses } from "@/server/warehouses/warehouses";
+import { FefoTable } from "../../batches/fefo-table";
 import {
   addVariantAction, conversionAction, imageAction, productStatusAction, reorderAction, replaceSkuAction, updateProductAction, updateVariantAction,
 } from "../actions";
 
 export const metadata: Metadata = { title: "Product" };
 
-const TABS = ["info", "variants", "stock", "movements", "suppliers", "history"] as const;
+const TABS = ["info", "variants", "stock", "movements", "batches", "serials", "suppliers", "history"] as const;
 type Tab = (typeof TABS)[number];
 // Doc 23 — what the status menu offers from each state.
 const NEXT: Record<string, string[]> = {
@@ -45,11 +47,16 @@ export default async function ProductPage({ params, searchParams }: PageProps<"/
         ? Promise.all([listAudit(ctx, { page: 1, perPage: 50, entityId: p.id }), vSel ? listAudit(ctx, { page: 1, perPage: 50, entityId: vSel.id }) : null])
         : null,
     ]);
+    // T11.5: batch / serial tabs (doc 25), for the selected variant.
+    const [fefo, serials] = await Promise.all([
+      tab === "batches" && can("inventory.view") && vSel ? fefoView(ctx, { variantId: vSel.id }) : null,
+      tab === "serials" && can("inventory.view") && vSel ? listSerials(ctx, { variantId: vSel.id, page: 1, perPage: 50 }) : null,
+    ]);
     const whCodes = Object.fromEntries((await listWarehouses(ctx).catch(() => [])).map((w) => [w.id, w.code]));
-    return { p, vSel, categories, brands, uoms, warehouses, stock, movements, history, whCodes, canEdit: can("products.update"), canArchive: can("products.archive") };
+    return { fefo, serials, p, vSel, categories, brands, uoms, warehouses, stock, movements, history, whCodes, canEdit: can("products.update"), canArchive: can("products.archive") };
   });
   if ("denied" in res) return <Denied message={res.denied} />;
-  const { p, vSel, categories, brands, uoms, warehouses, stock, movements, history, whCodes, canEdit, canArchive } = res.data;
+  const { fefo, serials, p, vSel, categories, brands, uoms, warehouses, stock, movements, history, whCodes, canEdit, canArchive } = res.data;
   const archived = p.status === "archived";
   const editable = canEdit && !archived;
   const statusOptions = NEXT[p.status].filter((x) => x !== "archived" || canArchive);
@@ -66,7 +73,7 @@ export default async function ProductPage({ params, searchParams }: PageProps<"/
       </div>
 
       <nav aria-label="Product sections" className="flex gap-1 overflow-x-auto border-b border-border">
-        {TABS.map((t) => (
+        {TABS.filter((t) => (t !== "batches" || p.requiresBatch) && (t !== "serials" || p.isSerialized)).map((t) => (
           <Link key={t} href={`?tab=${t}`} aria-current={t === tab ? "page" : undefined}
             className={`whitespace-nowrap px-3 py-2 text-sm capitalize ${t === tab ? "border-b-2 border-accent font-medium" : "text-muted"}`}>{t}</Link>
         ))}
@@ -315,7 +322,7 @@ export default async function ProductPage({ params, searchParams }: PageProps<"/
         )
       )}
 
-      {(tab === "movements" || tab === "history") && p.variants.length > 1 && (
+      {["movements", "history", "batches", "serials"].includes(tab) && p.variants.length > 1 && (
         <form className="flex items-end gap-2">
           <input type="hidden" name="tab" value={tab} />
           <label className="label">Variant
@@ -342,6 +349,38 @@ export default async function ProductPage({ params, searchParams }: PageProps<"/
               </tbody>
             </table>
           </div>
+        )
+      )}
+
+      {tab === "batches" && (
+        fefo === null ? <p className="text-sm text-muted">You don’t have access to stock levels.</p> : (
+          <>
+            <p className="text-sm text-muted">In pick order (earliest expiry first). <Link href={`/batches?variantId=${fefo.variantId}`} className="link">Open FEFO view</Link></p>
+            <FefoTable rows={fefo.rows} />
+          </>
+        )
+      )}
+
+      {tab === "serials" && (
+        serials === null ? <p className="text-sm text-muted">You don’t have access to stock levels.</p> : (
+          <>
+            <p className="text-sm text-muted">{serials.total} unit(s) in your warehouses. <Link href={`/serials?variantId=${vSel?.id}`} className="link">Search all serials</Link></p>
+            <div className="card overflow-x-auto p-0">
+              <table className="table">
+                <thead><tr><th>Serial</th><th>Batch</th><th>Status</th><th>Warehouse / bin</th></tr></thead>
+                <tbody>
+                  {serials.items.length === 0 && <tr><td colSpan={4} className="text-muted">No serial numbers yet.</td></tr>}
+                  {serials.items.map((u) => (
+                    <tr key={u.id}>
+                      <td><Link href={`/serials/${u.id}`} className="link font-mono text-xs">{u.serialNo}</Link></td>
+                      <td className="font-mono text-xs">{u.batch?.batchNo ?? "—"}</td><td>{u.status.replaceAll("_", " ")}</td>
+                      <td>{u.warehouse.code}{u.bin && ` / ${u.bin.code}`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )
       )}
 

@@ -46,11 +46,11 @@ export async function search(ctx: Ctx, input: { q: string }): Promise<{ q: strin
     groups.push(db.batch.findMany({
       where: { companyId, batchNo: like, ...(scope ? { stockBalances: { some: { warehouseId: scope } } } : {}) },
       take: PER_GROUP, orderBy: { batchNo: "asc" }, select: { batchNo: true, expiryDate: true, variantId: true, variant: { select: { sku: true } } },
-    }).then((r) => r.map((b) => ({ group: "Batches", label: b.batchNo, detail: `${b.variant.sku}${b.expiryDate ? ` · expires ${b.expiryDate.toISOString().slice(0, 10)}` : ""}`, link: `/reports/ledger?variantId=${b.variantId}` }))));
+    }).then((r) => r.map((b) => ({ group: "Batches", label: b.batchNo, detail: `${b.variant.sku}${b.expiryDate ? ` · expires ${b.expiryDate.toISOString().slice(0, 10)}` : ""}`, link: `/batches?variantId=${b.variantId}` }))));
     groups.push(db.serialUnit.findMany({
       where: { companyId, serialNo: like, warehouseId: scope }, take: PER_GROUP, orderBy: { serialNo: "asc" },
-      select: { serialNo: true, status: true, variantId: true, variant: { select: { sku: true } }, warehouse: { select: { code: true } } },
-    }).then((r) => r.map((u) => ({ group: "Serials", label: u.serialNo, detail: `${u.variant.sku} · ${u.status} @ ${u.warehouse.code}`, link: `/reports/ledger?variantId=${u.variantId}` }))));
+      select: { id: true, serialNo: true, status: true, variantId: true, variant: { select: { sku: true } }, warehouse: { select: { code: true } } },
+    }).then((r) => r.map((u) => ({ group: "Serials", label: u.serialNo, detail: `${u.variant.sku} · ${u.status} @ ${u.warehouse.code}`, link: `/serials/${u.id}` }))));
   }
   if (has("suppliers.view")) {
     groups.push(db.supplier.findMany({ where: { companyId, OR: [{ name: like }, { code: like }] }, take: PER_GROUP, orderBy: { name: "asc" }, select: { id: true, code: true, name: true, status: true } })

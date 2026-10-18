@@ -53,16 +53,7 @@ export async function reserve(tx: Tx, ctx: Ctx, input: ReserveInput) {
   // Candidate positions, FEFO (expiry ASC, then batch_no); expired batches are unreservable (B-04).
   let candidates: (string | null)[] = [null];
   if (variant.product.requiresBatch) {
-    const today = utcToday();
-    const batches = await tx.batch.findMany({
-      where: {
-        companyId: ctx.companyId, variantId: variant.id,
-        stockAllocations: { some: { warehouseId: warehouse.id } },
-        OR: [{ expiryDate: null }, { expiryDate: { gt: today } }],
-      },
-      orderBy: [{ expiryDate: { sort: "asc", nulls: "last" } }, { batchNo: "asc" }],
-    });
-    candidates = batches.map((b) => b.id);
+    candidates = (await fefoBatches(tx, ctx.companyId, variant.id, warehouse.id)).map((b) => b.id);
     if (input.batchId) {
       if (!candidates.includes(input.batchId)) throw new AppError("batch_insufficient", "Batch has no reservable stock", { batchId: input.batchId });
       candidates = [input.batchId, ...(input.allowSubstitution ? candidates.filter((c) => c !== input.batchId) : [])];
@@ -386,15 +377,30 @@ async function finish(
   return { reservation, ...ledger(movements), auditId: audit.id };
 }
 
-// Lines ordered by batch expiry ASC (nulls last), then batch_no — FEFO (B-03) — with the batch expiry.
+// FEFO (B-03), the one ordering rule: batch expiry ASC (no expiry last), then batch_no.
+// Every pick/reserve/fulfil and every screen showing a pick order uses this (doc 14 §6).
+type FefoKey = { expiryDate: Date | null; batchNo: string };
+export const fefoOrder = (a: FefoKey, b: FefoKey) =>
+  (a.expiryDate?.getTime() ?? Infinity) - (b.expiryDate?.getTime() ?? Infinity) || a.batchNo.localeCompare(b.batchNo);
+
+// A position's reservable batches (B-04: expiry_date <= today excluded) in FEFO order.
+export async function fefoBatches(tx: Pick<Tx, "batch">, companyId: string, variantId: string, warehouseId: string) {
+  const batches = await tx.batch.findMany({
+    where: {
+      companyId, variantId, stockAllocations: { some: { warehouseId } },
+      OR: [{ expiryDate: null }, { expiryDate: { gt: utcToday() } }],
+    },
+  });
+  return batches.sort(fefoOrder);
+}
+
+// Lines ordered FEFO, with the batch expiry.
 async function fefoLines(tx: Tx, lines: ReservationLine[]) {
   const ids = lines.map((l) => l.batchId).filter((b): b is string => !!b);
   if (ids.length === 0) return lines.map((l) => ({ ...l, expiry: null }));
   const batches = new Map((await tx.batch.findMany({ where: { id: { in: ids } } })).map((b) => [b.id, b]));
   const k = (l: ReservationLine) => batches.get(l.batchId!)!;
-  return [...lines].sort((a, b) =>
-    (k(a).expiryDate?.getTime() ?? Infinity) - (k(b).expiryDate?.getTime() ?? Infinity) ||
-    k(a).batchNo.localeCompare(k(b).batchNo)).map((l) => ({ ...l, expiry: k(l).expiryDate }));
+  return [...lines].sort((a, b) => fefoOrder(k(a), k(b))).map((l) => ({ ...l, expiry: k(l).expiryDate }));
 }
 
 // Mutating responses carry movement ids + resulting balances (doc 24).
