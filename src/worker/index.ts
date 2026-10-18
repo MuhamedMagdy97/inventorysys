@@ -2,6 +2,7 @@ import { PgBoss } from "pg-boss";
 import { validateEnv } from "@/server/env";
 import { expireDueReservations, runReconciler, sweepExpiredBatches } from "@/server/inventory/jobs";
 import { escalateApprovals, sendDigests, sendInstantEmails, stockAlerts } from "@/server/notifications/jobs";
+import { purgeRateLimits } from "@/server/rate-limit";
 import { deliverWebhooks } from "@/server/webhooks/webhooks";
 
 // Background worker (tech stack: pg-boss, no Redis). `npm run worker`. Jobs are re-runnable
@@ -16,6 +17,7 @@ const JOBS = [
   { name: "email-instant", cron: "* * * * *", run: () => sendInstantEmails() },
   { name: "approval-sla", cron: "5 * * * *", run: () => escalateApprovals() },
   { name: "webhook-deliver", cron: "* * * * *", run: () => deliverWebhooks() }, // Part 11, doc 24 (retries with backoff)
+  { name: "rate-limit-purge", cron: "*/5 * * * *", run: () => purgeRateLimits() }, // doc 26: past windows only
 ];
 
 async function main() {

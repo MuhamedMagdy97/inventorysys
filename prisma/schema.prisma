@@ -2017,3 +2017,14 @@ model LandedCostLine {
   @@index([landedCostId])
   @@map("landed_cost_line")
 }
+
+// Doc 26 rate limits: fixed 60 s window counters shared by every web replica (src/server/rate-limit.ts).
+// Not business data: past windows are purged by the worker.
+model RateLimitHit {
+  key     String   @id
+  count   Int
+  resetAt DateTime @map("reset_at") @db.Timestamptz(3) // window = first hit + 60 s
+
+  @@index([resetAt])
+  @@map("rate_limit_hit")
+}
