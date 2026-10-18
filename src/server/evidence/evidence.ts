@@ -2,13 +2,14 @@ import { createHash } from "node:crypto";
 import { writeAudit } from "@/server/core/audit";
 import { requirePermission, type Ctx } from "@/server/core/ctx";
 import { AppError } from "@/server/core/errors";
+import { assertClean } from "@/server/core/virus-scan";
 import { db, type Tx } from "@/server/db";
 
 // Evidence photos / PDFs (doc 26 uploads, edge #28). The type comes from the file's
 // own bytes, never the client's name or header; size is capped. A refused upload is
 // audited on its own connection, so it survives the rollback.
-// ponytail: stored in Postgres (bytea) and no virus-scan hook yet — move to object
-// storage + a scanner when volume or policy needs it.
+// Virus scan: assertClean (doc 26). ponytail: stored in Postgres (bytea) — move to
+// object storage when volume needs it.
 
 export const EVIDENCE_MAX_BYTES = 10 * 1024 * 1024;
 const ascii = (b: Uint8Array, at: number, s: string) => [...s].every((c, i) => b[at + i] === c.charCodeAt(0));
@@ -39,6 +40,7 @@ export async function uploadEvidence(tx: Tx, ctx: Ctx, input: { warehouseId: str
     }).catch((e) => console.error("upload.rejected audit failed", e));
     throw new AppError("validation_error", refusal, { field: "file", maxBytes: EVIDENCE_MAX_BYTES });
   }
+  await assertClean(ctx, { bytes: input.bytes, fileName, entityType: "evidence", warehouseId: wh.id });
   const sha256 = createHash("sha256").update(input.bytes).digest("hex");
   const row = await tx.evidence.create({
     data: {

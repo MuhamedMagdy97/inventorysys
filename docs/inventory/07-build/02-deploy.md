@@ -11,8 +11,9 @@ Binding for production. Nothing here is provisioned automatically; the owner cre
 | migrations | `docker compose -f docker-compose.prod.yml run --rm migrate` (`prisma migrate deploy` from the worker image) | Before every `up`. Never `migrate dev` in production. |
 | Postgres | **Managed** (see §2) | `DATABASE_URL` only; TLS on. |
 | backups | `scripts/backup.sh` daily + provider PITR | §3. |
+| `clamav` (optional) | `clamav/clamav` image, compose profile `scan` | Upload virus scan (doc 26). `docker compose -f docker-compose.prod.yml --env-file .env.prod --profile scan up -d clamav` (first start downloads signatures, 1–2 min; ~1.5 GB RAM), set `CLAMD_HOST=clamav` in `.env.prod`, then `up -d web`. Uploads fail closed while it is down (`scan_unavailable`): check `docker compose logs clamav` (freshclam updates). |
 
-Example: `docker-compose.prod.yml`. Env (all required unless noted): `DATABASE_URL`, `BETTER_AUTH_SECRET` (≥ 32 chars, `openssl rand -hex 32`), `BETTER_AUTH_URL` (public https URL), `CORS_ORIGINS` (optional), `BACKUP_PASSPHRASE` (backup job only). Web and worker validate env at boot and refuse to start on a bad or placeholder value (`src/server/env.ts`).
+Example: `docker-compose.prod.yml`. Env (all required unless noted): `DATABASE_URL`, `BETTER_AUTH_SECRET` (≥ 32 chars, `openssl rand -hex 32`), `BETTER_AUTH_URL` (public https URL), `CORS_ORIGINS` (optional), `CLAMD_HOST` / `CLAMD_PORT` (optional, upload virus scan), `BACKUP_PASSPHRASE` (backup job only). Web and worker validate env at boot and refuse to start on a bad or placeholder value (`src/server/env.ts`).
 
 ## 2. Managed Postgres choice
 
