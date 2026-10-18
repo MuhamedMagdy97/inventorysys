@@ -5,6 +5,7 @@ import { toAppError } from "@/server/core/api";
 import { writeAudit } from "@/server/core/audit";
 import { requirePermission, scopeFilter, type Ctx } from "@/server/core/ctx";
 import { AppError, assertVersion } from "@/server/core/errors";
+import { assertClean } from "@/server/core/virus-scan";
 import { db, transaction, type Tx } from "@/server/db";
 import { createAdjustment, submitAdjustment, type AdjustmentLineInput } from "@/server/inventory/adjustments";
 import { parseBool, parseDate, readTable, toCsv } from "./files";
@@ -92,6 +93,7 @@ export async function previewImport(
   await requirePermission(ctx, "imports.run", { warehouseId: input.warehouseId });
   if (input.type === "opening_balance" && !input.warehouseId) throw new AppError("validation_error", "Choose the warehouse", { field: "warehouseId" });
   const fileName = input.fileName.replace(/[^\w.\- ]/g, "_").slice(-200);
+  await assertClean(ctx, { bytes: input.bytes, fileName, entityType: "import_job", warehouseId: input.warehouseId });
   const table = readTable(fileName, input.bytes);
   const cols = COLUMNS[input.type];
   const missing = cols.required.filter((c) => !table.header.includes(c));

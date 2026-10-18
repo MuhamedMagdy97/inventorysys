@@ -10,6 +10,8 @@ const Env = z
     BETTER_AUTH_SECRET: z.string().min(32, "at least 32 characters"),
     BETTER_AUTH_URL: z.url(),
     CORS_ORIGINS: z.string().optional(), // comma-separated allowlist (doc 26)
+    CLAMD_HOST: z.string().optional(), // upload virus scan (doc 26); empty/unset = off
+    CLAMD_PORT: z.union([z.literal(""), z.coerce.number().int().min(1).max(65535)]).optional(),
   })
   .refine((e) => e.NODE_ENV !== "production" || !/change-me|dev-only|ci-only/.test(e.BETTER_AUTH_SECRET), {
     path: ["BETTER_AUTH_SECRET"], message: "placeholder secret in production",

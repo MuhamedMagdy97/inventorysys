@@ -15,6 +15,8 @@ x-env: &env
   BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?}
   BETTER_AUTH_URL: ${BETTER_AUTH_URL:?}
   CORS_ORIGINS: ${CORS_ORIGINS:-}
+  CLAMD_HOST: ${CLAMD_HOST:-} # e.g. `clamav` with --profile scan; empty = no upload virus scan
+  CLAMD_PORT: ${CLAMD_PORT:-3310}
 
 services:
   web:
@@ -34,6 +36,13 @@ services:
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
 
+  clamav: # optional upload virus scan (doc 26): --profile scan, then CLAMD_HOST=clamav
+    image: clamav/clamav:1.4
+    restart: unless-stopped
+    expose: ["3310"] # internal network only
+    volumes: ["clamav-db:/var/lib/clamav"]
+    profiles: ["scan"]
+
   migrate: # one-off per deploy, before `up`
     image: inventory-worker
     environment: *env
@@ -52,3 +61,6 @@ services:
       - ${BACKUP_HOST_DIR:-./backups}:/backups
     entrypoint: ["bash", "/scripts/backup.sh"]
     profiles: ["ops"]
+
+volumes:
+  clamav-db:
