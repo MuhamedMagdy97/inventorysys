@@ -77,8 +77,11 @@ export type PostInput = {
   sourceType: string; sourceId: string; legs: Leg[]; action?: string; postedAt?: Date;
   // T10.2 hot path (reserve): the caller already ran checkRefs() on these legs and
   // lockPositions() on their positions in this transaction, and has posted nothing since,
-  // so they aren't re-validated / re-locked while the position lock is held. Reservation legs only.
+  // so they aren't re-validated / re-locked while the position lock is held. Reservation legs only,
+  // and the source must be created in this transaction: its legs can't exist yet, so the MV-02
+  // read is skipped too (the unique leg key in the DB still rejects a duplicate).
   prelocked?: Map<string, PosState>;
+  auditAfter?: Record<string, unknown>; // merged into the posting's audit row (reserve: one row, not two)
 };
 
 export type PostResult = {
@@ -121,7 +124,7 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
 
   // 2. Leg-level idempotency (MV-02), checked under the locks so a racing
   //    double-post sees the winner's committed legs.
-  const existing = await tx.inventoryMovement.findMany({
+  const existing = pre ? [] : await tx.inventoryMovement.findMany({
     where: { companyId: ctx.companyId, idempotencyKey: { in: legs.map((l) => l.key) } },
     orderBy: { id: "asc" },
   });
@@ -264,6 +267,7 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
     entityId: input.sourceId,
     warehouseId: legs[0].warehouseId,
     after: {
+      ...input.auditAfter,
       movementIds: movements.map((m) => m.id),
       balances: [...bins.values()].filter((b) => b.touched).map((b) => ({ ...b, touched: undefined })),
       allocations: [...pos.values()].filter((p) => p.touched).map((p) => ({ id: p.id, qtyReserved: p.reserved })),
