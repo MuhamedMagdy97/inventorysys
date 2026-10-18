@@ -1,10 +1,13 @@
+import { createHash } from "node:crypto";
 import { db } from "@/server/db";
 import type { PrismaClient } from "@/generated/prisma/client";
 
 // Doc 26 rate limits: one row per key in Postgres, so every web replica shares the count.
 // Fixed 60 s window starting at the key's first hit; one statement per limited request,
 // times from the DB clock (no replica clock skew). SET expressions read the old row.
-export async function hit(key: string, limit: number, client: PrismaClient = db): Promise<{ ok: true } | { ok: false; retryAfter: number }> {
+// The key is stored as a SHA-256: it carries API keys / session tokens, which never go to the DB in clear.
+export async function hit(rawKey: string, limit: number, client: PrismaClient = db): Promise<{ ok: true } | { ok: false; retryAfter: number }> {
+  const key = createHash("sha256").update(rawKey).digest("hex");
   const [row] = await client.$queryRaw<{ count: number; retry_after: number }[]>`
     INSERT INTO rate_limit_hit (key, count, reset_at) VALUES (${key}, 1, now() + interval '60 seconds')
     ON CONFLICT (key) DO UPDATE SET

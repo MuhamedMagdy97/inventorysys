@@ -6,7 +6,7 @@ Binding for production. Nothing here is provisioned automatically; the owner cre
 
 | Piece | Where | Notes |
 |---|---|---|
-| `web` | `Dockerfile` target `web` (Next standalone `server.js`, non-root `node`, port 3000, `/api/health` healthcheck) | Behind one TLS reverse proxy that sets `X-Forwarded-For` (rate limiter keys on the last hop). One replica while the rate limiter is in-process. |
+| `web` | `Dockerfile` target `web` (Next standalone `server.js`, non-root `node`, port 3000, `/api/health` healthcheck) | Behind one TLS reverse proxy that sets `X-Forwarded-For` (rate limiter keys on the last hop). Safe to run 1–n replicas: rate-limit counters are shared in Postgres (T12.1). |
 | `worker` | `Dockerfile` target `worker` (pg-boss jobs via tsx, non-root) | Exactly the jobs in `src/worker/index.ts`; safe to run 1–n (stately queues). |
 | migrations | `docker compose -f docker-compose.prod.yml run --rm migrate` (`prisma migrate deploy` from the worker image) | Before every `up`. Never `migrate dev` in production. |
 | Postgres | **Managed** (see §2) | `DATABASE_URL` only; TLS on. |
