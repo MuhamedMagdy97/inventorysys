@@ -67,6 +67,20 @@ export async function reserve(tx: Tx, ctx: Ctx, input: ReserveInput) {
   // same-SKU queue moves faster (refs + warehouse share lock, as postMovements would).
   const order = input.externalOrderId ? await orderRef(tx, ctx, channel ?? "pos", input.externalOrderId) : null;
   await checkRefs(tx, ctx, candidates.map((b) => ({ variantId: variant.id, warehouseId: warehouse.id, binId: null, batchId: b })));
+  // The header for the full qty, still outside the lock (uncommitted, so nobody sees it); a partial
+  // reserve corrects qty below, a refused one rolls it back with the transaction.
+  let header = await tx.reservation.create({
+    data: {
+      companyId: ctx.companyId, variantId: variant.id, warehouseId: warehouse.id,
+      qty: qty.toFixed(4), expiresAt: new Date(Date.now() + ttl * 1000), ttlSeconds: ttl,
+      salesOrderRefId: order?.id ?? null, createdBy: ctx.userId,
+    },
+  });
+  // One candidate position (no batches, or a pinned batch alone): its single line is known now too.
+  const single = candidates.length === 1;
+  let preLines = single
+    ? await tx.reservationLine.createManyAndReturn({ data: [{ reservationId: header.id, batchId: candidates[0], qty: qty.toFixed(4) }] })
+    : [];
   const pos = await lockPositions(tx, ctx, candidates.map((b) => [variant.id, warehouse.id, b] as const));
   const ordered = candidates.map((b) => [...pos.values()].find((p) => p.batchId === b)!);
   const available = ordered.reduce((s, p) => s.plus(p.onHand.minus(p.reserved)), dec(0));
@@ -89,36 +103,31 @@ export async function reserve(tx: Tx, ctx: Ctx, input: ReserveInput) {
     left = left.minus(n);
   }
 
-  // Two statements instead of a nested create (+2 reads) while the lock is held.
-  const header = await tx.reservation.create({
-    data: {
-      companyId: ctx.companyId, variantId: variant.id, warehouseId: warehouse.id,
-      qty: take.toFixed(4), expiresAt: new Date(Date.now() + ttl * 1000), ttlSeconds: ttl,
-      salesOrderRefId: order?.id ?? null, createdBy: ctx.userId,
-    },
-  });
+  // Partial: correct the pre-written rows. FEFO split over several batches: lines now, under the
+  // lock (not a nested create, which adds 2 reads).
+  if (!take.eq(qty)) {
+    header = await tx.reservation.update({ where: { id: header.id }, data: { qty: take.toFixed(4) } });
+    if (single) preLines = [await tx.reservationLine.update({ where: { id: preLines[0].id }, data: { qty: take.toFixed(4) } })];
+  }
   const reservation = {
     ...header,
-    lines: await tx.reservationLine.createManyAndReturn({
+    lines: single ? preLines : await tx.reservationLine.createManyAndReturn({
       data: lines.map((l) => ({ reservationId: header.id, batchId: l.batchId, qty: l.qty.toFixed(4) })),
     }),
   };
   const posted = await postMovements(tx, ctx, {
-    sourceType: "reservation", sourceId: reservation.id, action: "reserve", prelocked: pos,
+    sourceType: "reservation", sourceId: reservation.id, action: "reserve", prelocked: pos, auditAfter: { reservation },
     legs: reservation.lines.map((l, i) => ({
       type: "reservation", variantId: variant.id, warehouseId: warehouse.id, batchId: l.batchId,
       delta: { reserved: l.qty }, line: i + 1, reasonCode: "reserve",
     })),
-  });
-  const audit = await writeAudit(tx, ctx, {
-    action: "create", entityType: "reservation", entityId: reservation.id, warehouseId: warehouse.id, after: reservation,
   });
   return {
     reservation,
     requested: qty.toString(),
     remainder: qty.minus(take).toString(), // > 0 only with allowPartial
     ...ledger(posted.movements),
-    auditId: audit.id,
+    auditId: posted.auditId, // T10.2: one audit row carries the posting and the reservation
   };
 }
 

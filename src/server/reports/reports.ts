@@ -4,8 +4,9 @@ import { writeAudit } from "@/server/core/audit";
 import { requirePermission, type Ctx } from "@/server/core/ctx";
 import { db } from "@/server/db";
 import { toCsv } from "@/server/imports/files";
-import { dec, type Dec } from "@/server/inventory/post";
+import { dec, type Dec, type DecValue } from "@/server/inventory/post";
 import { liveValue, valueAt } from "@/server/inventory/valuation";
+import { readSettings } from "@/server/settings/settings";
 
 // Doc 16 §2, V1 report set. Reports only READ the ledger and its caches (stock_balance,
 // stock_allocation, variant_cost, documents). Every report: `reports.view`, the company,
@@ -31,6 +32,8 @@ export const ReportFilters = z.object({
   actorId: z.uuid().optional(), // ledger
   groupBy: z.enum(["variant", "warehouse", "category"]).optional(), // valuation
   limit: z.coerce.number().int().min(1).max(10_000).optional(), // ledger rows
+  batchNo: z.string().trim().min(1).max(100).optional(), // lot traceability
+  serialNo: z.string().trim().min(1).max(100).optional(), // lot traceability
 });
 export type ReportFilters = z.infer<typeof ReportFilters>;
 
@@ -48,6 +51,12 @@ export const REPORTS = {
   returns: { title: "Returns", about: "Purchase and customer returns by status and reason, inspection dispositions, return rates.", filters: ["warehouse", "product", "dates"] },
   transfers: { title: "Transfers & in transit", about: "Open transfers with days in transit and value in transit; damaged / missing variances.", filters: ["warehouse", "product", "dates"] },
   movement: { title: "Product movement", about: "Physical units in / out / net per SKU and warehouse.", filters: ["warehouse", "product", "dates"] },
+  // V1.5 (doc 16 §4)
+  turnover: { title: "Inventory turnover", about: "COGS ÷ average inventory value per SKU and warehouse, with days of inventory.", filters: ["warehouse", "product", "dates"] },
+  "dead-slow": { title: "Dead / slow stock", about: "Stock with no sale or transfer out for longer than the slow / dead thresholds (company settings).", filters: ["warehouse", "product"] },
+  "warehouse-performance": { title: "Warehouse performance", about: "Receive and ship cycle times; receipt, transit and count discrepancy rates per warehouse.", filters: ["warehouse", "dates"] },
+  traceability: { title: "Lot traceability", about: "A batch or serial: supplier PO + receipt → transfers → reservations / fulfilments → returns.", filters: ["warehouse", "product", "lot"] },
+  expiring: { title: "Expiring stock", about: "Batch stock by expiry bucket: expired, 0–7, 8–30, 31–60, 61–90 days.", filters: ["warehouse", "product"] },
 } as const;
 export type ReportName = keyof typeof REPORTS;
 export const isReport = (s: string): s is ReportName => Object.hasOwn(REPORTS, s);
@@ -425,10 +434,319 @@ async function movement(ctx: Ctx, f: ReportFilters): Promise<Section[]> {
   }];
 }
 
+// ───────── V1.5 (doc 16 §4, RP-11…RP-15) ─────────
+
+const DAY = 86_400_000;
+const phys = (x: { dOnHand: DecValue | null; dBlocked: DecValue | null; dDamaged: DecValue | null; dExpired: DecValue | null }) =>
+  dec(x.dOnHand).plus(dec(x.dBlocked)).plus(dec(x.dDamaged)).plus(dec(x.dExpired));
+const pctOf = (a: Dec, b: Dec) => (b.isZero() ? null : s(a.div(b).times(100).toDecimalPlaces(1)));
+const avgDays = (ms: number[]) => (ms.length ? (ms.reduce((a, b) => a + b, 0) / ms.length / DAY).toFixed(1) : null); // display only
+const period = (f: ReportFilters) => (f.from || f.to ? { gte: f.from, lte: f.to } : undefined);
+
+async function turnover(ctx: Ctx, f: ReportFilters): Promise<{ sections: Section[]; notes: string[] }> {
+  const p = await prep(ctx, f);
+  const to = f.to ?? new Date();
+  const from = f.from ?? new Date(to.getTime() - 365 * DAY);
+  const [open, close, sales] = await Promise.all([
+    valueAt(ctx, from, { warehouseId: f.warehouseId }),
+    valueAt(ctx, to, { warehouseId: f.warehouseId }),
+    db.inventoryMovement.groupBy({
+      by: ["variantId", "warehouseId"],
+      where: { companyId: ctx.companyId, warehouseId: whereWh(p), variantId: whereVar(p), type: "sale_fulfilment", createdAt: { gt: from, lte: to } },
+      _sum: { valueDelta: true, dOnHand: true, dBlocked: true, dDamaged: true, dExpired: true },
+    }),
+  ]);
+  type T = { cogs: Dec; units: Dec; open: Dec; close: Dec };
+  const m = new Map<string, T>();
+  const at = (k: string) => m.get(k) ?? m.set(k, { cogs: dec(0), units: dec(0), open: dec(0), close: dec(0) }).get(k)!;
+  const keep = (v: string) => !p.variantIds || p.variantIds.includes(v);
+  for (const l of open.lines) if (keep(l.variantId)) at(key(l)).open = dec(l.value);
+  for (const l of close.lines) if (keep(l.variantId)) at(key(l)).close = dec(l.value);
+  for (const r of sales) Object.assign(at(key(r)), { cogs: dec(r._sum.valueDelta).neg(), units: phys(r._sum).neg() });
+  const days = (to.getTime() - from.getTime()) / DAY;
+  const calc = (x: T) => {
+    const avg = x.open.plus(x.close).div(2);
+    const turns = avg.isZero() || x.cogs.isZero() ? null : x.cogs.div(avg);
+    return { avg_value: s(avg.toDecimalPlaces(4)), turns: turns && s(turns.toDecimalPlaces(2)), days_of_inventory: turns && s(dec(days).div(turns).toDecimalPlaces(1)) };
+  };
+  const keys = [...m.keys()].filter((k) => { const x = m.get(k)!; return !(x.cogs.isZero() && x.open.isZero() && x.close.isZero()); });
+  const L = await labels(ctx, keys.map((k) => split(k)[0]), keys.map((k) => split(k)[1]));
+  const tot: T = { cogs: dec(0), units: dec(0), open: dec(0), close: dec(0) };
+  const rows = keys.map((k) => {
+    const [v, w] = split(k), x = m.get(k)!;
+    for (const c of ["cogs", "units", "open", "close"] as const) tot[c] = tot[c].plus(x[c]);
+    return { sku: L.v(v).sku, name: L.v(v).name, warehouse: L.w(w), units_sold: s(x.units), cogs: s(x.cogs), opening_value: s(x.open), closing_value: s(x.close), ...calc(x) };
+  }).sort((a, b) => `${a.sku}${a.warehouse}`.localeCompare(`${b.sku}${b.warehouse}`));
+  return {
+    sections: [{
+      columns: [["sku", "SKU"], ["name", "Name"], ["warehouse", "Warehouse"], ["units_sold", "Units sold"], ["cogs", "COGS"], ["opening_value", "Opening value"], ["closing_value", "Closing value"], ["avg_value", "Avg value"], ["turns", "Turns"], ["days_of_inventory", "Days of inventory"]],
+      rows, total: { sku: "Total", units_sold: s(tot.units), cogs: s(tot.cogs), opening_value: s(tot.open), closing_value: s(tot.close), ...calc(tot) },
+    }],
+    notes: [`Period ${from.toISOString().slice(0, 10)} → ${to.toISOString().slice(0, 10)} (${days.toFixed(0)} days). COGS = fulfilments at their WAC snapshot; values are the INV-022 replay at each end.`],
+  };
+}
+
+async function deadSlow(ctx: Ctx, f: ReportFilters): Promise<{ sections: Section[]; notes: string[] }> {
+  const p = await prep(ctx, f);
+  const where = { companyId: ctx.companyId, warehouseId: whereWh(p), variantId: whereVar(p) };
+  const [pos, { slowStockDays, deadStockDays }, outs, firsts] = await Promise.all([
+    positions(ctx, p), readSettings(db, ctx.companyId),
+    db.inventoryMovement.groupBy({ by: ["variantId", "warehouseId"], where: { ...where, type: { in: ["sale_fulfilment", "transfer_out"] } }, _max: { createdAt: true } }),
+    db.inventoryMovement.groupBy({ by: ["variantId", "warehouseId"], where, _min: { createdAt: true } }),
+  ]);
+  const lastOut = new Map(outs.map((r) => [key(r), r._max.createdAt]));
+  const first = new Map(firsts.map((r) => [key(r), r._min.createdAt]));
+  const now = Date.now();
+  const hits = [...pos.entries()].flatMap(([k, x]) => {
+    const qty = x.onHand.plus(x.blocked).plus(x.damaged).plus(x.expired);
+    const anchor = lastOut.get(k) ?? first.get(k);
+    if (!qty.gt(0) || !anchor) return [];
+    const idle = Math.floor((now - anchor.getTime()) / DAY);
+    const status = idle >= deadStockDays ? "dead" : idle >= slowStockDays ? "slow" : null;
+    return status ? [{ k, x, qty, idle, status }] : [];
+  });
+  const L = await labels(ctx, hits.map((h) => split(h.k)[0]), hits.map((h) => split(h.k)[1]));
+  let tv = dec(0);
+  const rows = hits.sort((a, b) => (a.status === b.status ? b.idle - a.idle : a.status === "dead" ? -1 : 1)).map((h) => {
+    const [v, w] = split(h.k);
+    tv = tv.plus(h.x.value);
+    return { status: h.status, sku: L.v(v).sku, name: L.v(v).name, warehouse: L.w(w), qty: s(h.qty), value: s(h.x.value), last_out: day(lastOut.get(h.k)), idle_days: h.idle };
+  });
+  return {
+    sections: [{
+      columns: [["status", "Status"], ["sku", "SKU"], ["name", "Name"], ["warehouse", "Warehouse"], ["qty", "Qty (physical)"], ["value", "Value"], ["last_out", "Last sale / transfer out"], ["idle_days", "Idle days"]],
+      rows, total: { status: `${rows.filter((r) => r.status === "dead").length} dead · ${rows.filter((r) => r.status === "slow").length} slow`, value: s(tv) },
+    }],
+    notes: [`Slow = no sale or transfer out for ≥ ${slowStockDays} days, dead = ≥ ${deadStockDays} days (company settings); never shipped = counted from the first movement into the position.`],
+  };
+}
+
+async function warehousePerformance(ctx: Ctx, f: ReportFilters): Promise<Section[]> {
+  const p = await prep(ctx, f);
+  const per = period(f);
+  const from = f.from ?? null, to = f.to ?? null;
+  const [receipts, inbound, outbound, fulfils, countLines] = await Promise.all([
+    db.goodsReceipt.findMany({
+      where: { companyId: ctx.companyId, warehouseId: whereWh(p), reversalOfReceiptId: null, reversal: null, receivedAt: per },
+      select: { warehouseId: true, receivedAt: true, po: { select: { orderedAt: true } }, lines: { select: { qtyDamaged: true, qtyExpired: true, qtyMissing: true, qtyExcessBlocked: true, wrongProduct: true } } },
+    }),
+    db.$queryRaw<{ wh: string; secs: number; shipped: string | null; bad: string | null }[]>`
+      SELECT t.to_warehouse_id wh, EXTRACT(EPOCH FROM (r.first - t.shipped_at))::float8 secs,
+        (SELECT SUM(qty_shipped)::text FROM transfer_line WHERE transfer_id = t.id) shipped,
+        (SELECT SUM(qty_damaged + qty_missing + qty_missing_reported)::text FROM transfer_line WHERE transfer_id = t.id) bad
+      FROM transfer t
+      JOIN (SELECT split_part(source_id, ':', 1) tid, MIN(created_at) first FROM inventory_movement
+            WHERE company_id = ${ctx.companyId} AND source_type = 'transfer_receipt' GROUP BY 1) r ON r.tid = t.id
+      WHERE t.company_id = ${ctx.companyId} AND t.shipped_at IS NOT NULL
+        AND (${p.scope}::text[] IS NULL OR t.to_warehouse_id = ANY(${p.scope}::text[]))
+        AND (${from}::timestamp IS NULL OR r.first >= ${from}::timestamp)
+        AND (${to}::timestamp IS NULL OR r.first <= ${to}::timestamp)`,
+    db.transfer.findMany({
+      where: { companyId: ctx.companyId, fromWarehouseId: whereWh(p), approvedAt: { not: null }, shippedAt: { not: null, ...per } },
+      select: { fromWarehouseId: true, approvedAt: true, shippedAt: true },
+    }),
+    db.$queryRaw<{ wh: string; secs: number }[]>`
+      SELECT r.warehouse_id wh, EXTRACT(EPOCH FROM (MIN(m.created_at) - r.created_at))::float8 secs
+      FROM reservation r JOIN inventory_movement m
+        ON m.company_id = r.company_id AND m.source_type = 'fulfilment' AND split_part(m.source_id, ':', 1) = r.id
+      WHERE r.company_id = ${ctx.companyId} AND (${p.scope}::text[] IS NULL OR r.warehouse_id = ANY(${p.scope}::text[]))
+      GROUP BY r.id, r.warehouse_id, r.created_at
+      HAVING (${from}::timestamp IS NULL OR MIN(m.created_at) >= ${from}::timestamp)
+        AND (${to}::timestamp IS NULL OR MIN(m.created_at) <= ${to}::timestamp)`,
+    db.stockCountLine.findMany({
+      where: { countedQty: { not: null }, count: { companyId: ctx.companyId, warehouseId: whereWh(p), status: "applied", appliedAt: per } },
+      select: { variance: true, count: { select: { warehouseId: true } } },
+    }),
+  ]);
+  type W = { receipts: number; receiveMs: number[]; lines: number; badLines: number; tIn: number; transitMs: number[]; shipped: Dec; bad: Dec; tOut: number; dispatchMs: number[]; fulfilMs: number[]; counted: number; varied: number };
+  const m = new Map<string, W>();
+  const at = (wh: string) => m.get(wh) ?? m.set(wh, { receipts: 0, receiveMs: [], lines: 0, badLines: 0, tIn: 0, transitMs: [], shipped: dec(0), bad: dec(0), tOut: 0, dispatchMs: [], fulfilMs: [], counted: 0, varied: 0 }).get(wh)!;
+  for (const r of receipts) {
+    const x = at(r.warehouseId);
+    x.receipts++;
+    if (r.po.orderedAt) x.receiveMs.push(r.receivedAt.getTime() - r.po.orderedAt.getTime());
+    x.lines += r.lines.length;
+    x.badLines += r.lines.filter((l) => l.wrongProduct || [l.qtyDamaged, l.qtyExpired, l.qtyMissing, l.qtyExcessBlocked].some((q) => dec(q).gt(0))).length;
+  }
+  for (const t of inbound) { const x = at(t.wh); x.tIn++; x.transitMs.push(t.secs * 1000); x.shipped = x.shipped.plus(dec(t.shipped)); x.bad = x.bad.plus(dec(t.bad)); }
+  for (const t of outbound) { const x = at(t.fromWarehouseId); x.tOut++; x.dispatchMs.push(t.shippedAt!.getTime() - t.approvedAt!.getTime()); }
+  for (const r of fulfils) at(r.wh).fulfilMs.push(r.secs * 1000);
+  for (const l of countLines) { const x = at(l.count.warehouseId); x.counted++; if (l.variance && !dec(l.variance).isZero()) x.varied++; }
+  const L = await labels(ctx, [], m.keys());
+  const ws = [...m.entries()].map(([id, x]) => ({ warehouse: L.w(id), x })).sort((a, b) => a.warehouse.localeCompare(b.warehouse));
+  const rowsWhere = (has: (x: W) => boolean, row: (x: W) => Record<string, Cell>) => ws.filter((w) => has(w.x)).map((w) => ({ warehouse: w.warehouse, ...row(w.x) }));
+  return [
+    {
+      title: "Receiving",
+      columns: [["warehouse", "Warehouse"], ["receipts", "Receipts"], ["receive_days", "Avg PO → receipt (days)"], ["lines", "Receipt lines"], ["bad_lines", "Discrepant lines"], ["receipt_pct", "Receipt discrepancy %"], ["transfers_in", "Transfers in"], ["transit_days", "Avg shipped → received (days)"], ["transit_pct", "Transit discrepancy %"]],
+      rows: rowsWhere((x) => x.receipts > 0 || x.tIn > 0, (x) => ({
+        receipts: x.receipts, receive_days: avgDays(x.receiveMs), lines: x.lines, bad_lines: x.badLines, receipt_pct: pctOf(dec(x.badLines), dec(x.lines)),
+        transfers_in: x.tIn, transit_days: avgDays(x.transitMs), transit_pct: pctOf(x.bad, x.shipped),
+      })),
+    },
+    {
+      title: "Shipping",
+      columns: [["warehouse", "Warehouse"], ["transfers_out", "Transfers shipped"], ["dispatch_days", "Avg approved → shipped (days)"], ["orders", "Reservations fulfilled"], ["fulfil_days", "Avg reserved → fulfilled (days)"]],
+      rows: rowsWhere((x) => x.tOut > 0 || x.fulfilMs.length > 0, (x) => ({ transfers_out: x.tOut, dispatch_days: avgDays(x.dispatchMs), orders: x.fulfilMs.length, fulfil_days: avgDays(x.fulfilMs) })),
+    },
+    {
+      title: "Count accuracy",
+      columns: [["warehouse", "Warehouse"], ["counted", "Lines counted"], ["varied", "Lines with variance"], ["variance_pct", "Variance %"]],
+      rows: rowsWhere((x) => x.counted > 0, (x) => ({ counted: x.counted, varied: x.varied, variance_pct: pctOf(dec(x.varied), dec(x.counted)) })),
+    },
+  ];
+}
+
+async function traceability(ctx: Ctx, f: ReportFilters): Promise<{ sections: Section[]; notes: string[] }> {
+  const p = await prep(ctx, f);
+  if (!f.batchNo && !f.serialNo) return { sections: [], notes: ["Enter a batch number or a serial number."] };
+  const co = ctx.companyId;
+  const [batches, units] = await Promise.all([
+    f.batchNo ? db.batch.findMany({ where: { companyId: co, batchNo: f.batchNo, variantId: whereVar(p) }, include: { variant: { select: { sku: true } } } }) : [],
+    f.serialNo ? db.serialUnit.findMany({
+      where: { companyId: co, serialNo: f.serialNo, variantId: whereVar(p), warehouseId: whereWh(p) },
+      include: { variant: { select: { sku: true } }, batch: { select: { batchNo: true } }, warehouse: { select: { code: true } } }, orderBy: { createdAt: "asc" },
+    }) : [],
+  ]);
+  const batchIds = batches.map((b) => b.id);
+  const ids = <K extends "receiptLineId" | "transferLineId" | "reservationId">(k: K) => units.flatMap((u) => (u[k] ? [u[k]!] : []));
+  const serialHas = f.serialNo ? [{ serials: { has: f.serialNo } }] : [];
+  const scopeOr = p.scope ? { OR: [{ fromWarehouseId: { in: p.scope } }, { toWarehouseId: { in: p.scope } }] } : {};
+  const [supply, transfers, reservations, prs, srs, moves] = await Promise.all([
+    db.receiptLine.findMany({
+      where: { OR: [{ batchId: { in: batchIds } }, { id: { in: ids("receiptLineId") } }], receipt: { companyId: co, warehouseId: whereWh(p) } },
+      include: { variant: { select: { sku: true } }, batch: { select: { batchNo: true } }, receipt: { select: { number: true, receivedAt: true, reversalOfReceiptId: true, warehouse: { select: { code: true } }, po: { select: { number: true, supplierName: true } } } } },
+      orderBy: { receipt: { receivedAt: "asc" } },
+    }),
+    db.transferLine.findMany({
+      where: { OR: [{ batchId: { in: batchIds } }, { id: { in: ids("transferLineId") } }], transfer: { companyId: co, ...scopeOr } },
+      include: { variant: { select: { sku: true } }, batch: { select: { batchNo: true } }, transfer: { select: { number: true, status: true, shippedAt: true, fromWarehouse: { select: { code: true } }, toWarehouse: { select: { code: true } } } } },
+      orderBy: [{ transfer: { createdAt: "asc" } }, { lineNo: "asc" }],
+    }),
+    db.reservationLine.findMany({
+      where: { OR: [{ batchId: { in: batchIds } }, { reservationId: { in: ids("reservationId") } }], reservation: { companyId: co, warehouseId: whereWh(p) } },
+      include: { batch: { select: { batchNo: true } }, reservation: { select: { id: true, status: true, createdAt: true, variant: { select: { sku: true } }, warehouse: { select: { code: true } }, order: { select: { channel: true, externalOrderId: true } } } } },
+      orderBy: { reservation: { createdAt: "asc" } },
+    }),
+    db.purchaseReturnLine.findMany({
+      where: { OR: [{ batchId: { in: batchIds } }, ...serialHas], purchaseReturn: { companyId: co, warehouseId: whereWh(p) } },
+      include: { variant: { select: { sku: true } }, batch: { select: { batchNo: true } }, purchaseReturn: { select: { number: true, status: true, createdAt: true, supplier: { select: { name: true } }, warehouse: { select: { code: true } } } } },
+    }),
+    db.salesReturnLine.findMany({
+      where: { OR: [{ batchId: { in: batchIds } }, ...serialHas], salesReturn: { companyId: co, warehouseId: whereWh(p) } },
+      include: { variant: { select: { sku: true } }, batch: { select: { batchNo: true } }, salesReturn: { select: { number: true, status: true, createdAt: true, warehouse: { select: { code: true } } } } },
+    }),
+    batchIds.length ? db.inventoryMovement.findMany({
+      where: { companyId: co, batchId: { in: batchIds }, warehouseId: whereWh(p) }, orderBy: { id: "desc" }, take: 1000,
+      include: { variant: { select: { sku: true } }, warehouse: { select: { code: true } }, bin: { select: { code: true } } },
+    }) : [],
+  ]);
+  const ts = (d: Date | null | undefined) => d?.toISOString().replace("T", " ").slice(0, 19) ?? null;
+  const returns = [
+    ...prs.map((l) => ({ kind: "Purchase return", number: l.purchaseReturn.number, status: l.purchaseReturn.status, at: ts(l.purchaseReturn.createdAt), warehouse: l.purchaseReturn.warehouse.code, party: l.purchaseReturn.supplier.name, sku: l.variant.sku, batch: l.batch?.batchNo ?? null, qty: s(dec(l.qty)), serials: l.serials.join(" ") })),
+    ...srs.map((l) => ({ kind: "Customer return", number: l.salesReturn.number, status: l.salesReturn.status, at: ts(l.salesReturn.createdAt), warehouse: l.salesReturn.warehouse.code, party: null, sku: l.variant.sku, batch: l.batch?.batchNo ?? null, qty: s(dec(l.qty)), serials: l.serials.join(" ") })),
+  ].sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  const notes = [];
+  if (!batches.length && !units.length) notes.push("No batch or serial with that number (in your warehouses).");
+  if (units.length) notes.push("For a serial, Transfers shows the last transfer that moved the unit; its full history is on the serial page.");
+  if (moves.length === 1000) notes.push("Ledger: showing the newest 1 000 movements of the batch.");
+  return {
+    sections: [
+      {
+        title: "Lot",
+        columns: [["kind", "Kind"], ["number", "Batch / serial"], ["sku", "SKU"], ["batch", "Batch"], ["mfg", "Mfg"], ["expiry", "Expiry"], ["status", "Status"], ["warehouse", "Warehouse"]],
+        rows: [
+          ...batches.map((b) => ({ kind: "Batch", number: b.batchNo, sku: b.variant.sku, batch: b.batchNo, mfg: day(b.mfgDate), expiry: day(b.expiryDate), status: null, warehouse: null })),
+          ...units.map((u) => ({ kind: "Serial", number: u.serialNo, sku: u.variant.sku, batch: u.batch?.batchNo ?? null, mfg: null, expiry: null, status: u.status, warehouse: u.warehouse.code })),
+        ],
+      },
+      {
+        title: "Supply (PO + receipt)",
+        columns: [["grn", "Receipt"], ["kind", "Kind"], ["po", "PO"], ["supplier", "Supplier"], ["warehouse", "Warehouse"], ["received_at", "Received (UTC)"], ["sku", "SKU"], ["batch", "Batch"], ["accepted", "Accepted"], ["damaged", "Damaged"]],
+        rows: supply.map((l) => ({
+          grn: l.receipt.number, kind: l.receipt.reversalOfReceiptId ? "reversal" : "receipt", po: l.receipt.po.number, supplier: l.receipt.po.supplierName, warehouse: l.receipt.warehouse.code,
+          received_at: ts(l.receipt.receivedAt), sku: l.variant.sku, batch: l.batch?.batchNo ?? null, accepted: s(dec(l.qtyAccepted)), damaged: s(dec(l.qtyDamaged)),
+        })),
+      },
+      {
+        title: "Transfers",
+        columns: [["number", "Transfer"], ["status", "Status"], ["route", "From → to"], ["shipped_at", "Shipped"], ["sku", "SKU"], ["batch", "Batch"], ["shipped", "Shipped"], ["received", "Received"], ["damaged", "Damaged"], ["missing", "Missing"]],
+        rows: transfers.map((l) => ({
+          number: l.transfer.number, status: l.transfer.status, route: `${l.transfer.fromWarehouse.code} → ${l.transfer.toWarehouse.code}`, shipped_at: day(l.transfer.shippedAt), sku: l.variant.sku,
+          batch: l.batch?.batchNo ?? null, shipped: s(dec(l.qtyShipped)), received: s(dec(l.qtyReceived)), damaged: s(dec(l.qtyDamaged)), missing: s(dec(l.qtyMissing).plus(dec(l.qtyMissingReported))),
+        })),
+      },
+      {
+        title: "Reservations & fulfilments",
+        columns: [["reservation", "Reservation"], ["order", "Order"], ["status", "Status"], ["at", "Reserved (UTC)"], ["warehouse", "Warehouse"], ["sku", "SKU"], ["batch", "Batch"], ["qty", "Reserved"], ["fulfilled", "Fulfilled"], ["released", "Released"]],
+        rows: reservations.map((l) => ({
+          reservation: l.reservation.id, order: l.reservation.order ? `${l.reservation.order.channel}:${l.reservation.order.externalOrderId}` : null, status: l.reservation.status, at: ts(l.reservation.createdAt),
+          warehouse: l.reservation.warehouse.code, sku: l.reservation.variant.sku, batch: l.batch?.batchNo ?? null, qty: s(dec(l.qty)), fulfilled: s(dec(l.qtyFulfilled)), released: s(dec(l.qtyReleased)),
+        })),
+      },
+      {
+        title: "Returns",
+        columns: [["kind", "Kind"], ["number", "Return"], ["status", "Status"], ["at", "Created (UTC)"], ["warehouse", "Warehouse"], ["party", "Supplier"], ["sku", "SKU"], ["batch", "Batch"], ["qty", "Qty"], ["serials", "Serials"]],
+        rows: returns,
+      },
+      ...(batchIds.length ? [{
+        title: "Ledger (batch)",
+        columns: [["at", "When (UTC)"], ["type", "Type"], ["sku", "SKU"], ["warehouse", "Warehouse"], ["bin", "Bin"], ["d_physical", "Δ physical"], ["d_reserved", "Δ reserved"], ["source", "Source"]] as [string, string][],
+        rows: moves.map((m) => ({ at: ts(m.createdAt), type: m.type, sku: m.variant.sku, warehouse: m.warehouse.code, bin: m.bin?.code ?? null, d_physical: s(phys(m)), d_reserved: s(dec(m.dReserved)), source: `${m.sourceType}:${m.sourceId}` })),
+      }] : []),
+    ],
+    notes,
+  };
+}
+
+const BUCKETS = [["expired", -Infinity], ["0–7 days", 0], ["8–30 days", 8], ["31–60 days", 31], ["61–90 days", 61]] as const;
+
+async function expiring(ctx: Ctx, f: ReportFilters): Promise<Section[]> {
+  const p = await prep(ctx, f);
+  const today = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
+  const where = { companyId: ctx.companyId, warehouseId: whereWh(p), variantId: whereVar(p) };
+  const bal = await db.stockBalance.groupBy({
+    by: ["variantId", "warehouseId", "batchId"],
+    where: { ...where, batch: { expiryDate: { lte: new Date(today.getTime() + 90 * DAY) } }, OR: [{ onHand: { gt: 0 } }, { expired: { gt: 0 } }] },
+    _sum: { onHand: true, expired: true },
+  });
+  const [batches, costs, L] = await Promise.all([
+    db.batch.findMany({ where: { id: { in: bal.map((b) => b.batchId!) } }, select: { id: true, batchNo: true, expiryDate: true } }),
+    db.variantCost.findMany({ where: { ...where, variantId: { in: bal.map((b) => b.variantId) } } }),
+    labels(ctx, bal.map((b) => b.variantId), bal.map((b) => b.warehouseId)),
+  ]);
+  const B = new Map(batches.map((b) => [b.id, b]));
+  const wac = new Map(costs.map((c) => [key(c), wacOf(dec(c.qty), dec(c.value))]));
+  const sum = new Map(BUCKETS.map(([b]) => [b as string, { positions: 0, onHand: dec(0), expired: dec(0), value: dec(0) }]));
+  const rows = bal.map((r) => {
+    const b = B.get(r.batchId!)!, left = Math.round((b.expiryDate!.getTime() - today.getTime()) / DAY);
+    const bucket = BUCKETS.findLast(([, min]) => left >= min)![0];
+    const onHand = dec(r._sum.onHand), expired = dec(r._sum.expired), value = onHand.plus(expired).times(wac.get(key(r)) ?? 0).toDecimalPlaces(4);
+    const t = sum.get(bucket)!;
+    Object.assign(t, { positions: t.positions + 1, onHand: t.onHand.plus(onHand), expired: t.expired.plus(expired), value: t.value.plus(value) });
+    return { bucket, sku: L.v(r.variantId).sku, name: L.v(r.variantId).name, warehouse: L.w(r.warehouseId), batch: b.batchNo, expiry: day(b.expiryDate), days_left: left, on_hand: s(onHand), expired: s(expired), value: s(value) };
+  }).sort((a, b) => a.days_left - b.days_left || `${a.sku}${a.warehouse}`.localeCompare(`${b.sku}${b.warehouse}`));
+  const all = [...sum.values()];
+  return [
+    {
+      title: "By bucket",
+      columns: [["bucket", "Bucket"], ["positions", "Batch positions"], ["on_hand", "On hand"], ["expired", "Expired"], ["value", "Value"]],
+      rows: [...sum.entries()].map(([bucket, t]) => ({ bucket, positions: t.positions, on_hand: s(t.onHand), expired: s(t.expired), value: s(t.value) })),
+      total: { bucket: "Total", positions: all.reduce((a, t) => a + t.positions, 0), on_hand: s(all.reduce((a, t) => a.plus(t.onHand), dec(0))), expired: s(all.reduce((a, t) => a.plus(t.expired), dec(0))), value: s(all.reduce((a, t) => a.plus(t.value), dec(0))) },
+    },
+    {
+      title: "Batch positions",
+      columns: [["bucket", "Bucket"], ["sku", "SKU"], ["name", "Name"], ["warehouse", "Warehouse"], ["batch", "Batch"], ["expiry", "Expiry"], ["days_left", "Days left"], ["on_hand", "On hand"], ["expired", "Expired"], ["value", "Value at WAC"]],
+      rows,
+    },
+  ];
+}
+
 export async function runReport(ctx: Ctx, name: ReportName, filters: ReportFilters): Promise<Report> {
   const f = filters; // parsed by the caller (ReportFilters)
   const r = await ({
     summary, ledger, valuation, "low-stock": lowStock, damaged, purchasing, returns, transfers, movement,
+    turnover, "dead-slow": deadSlow, "warehouse-performance": warehousePerformance, traceability, expiring,
   } satisfies Record<ReportName, (ctx: Ctx, f: ReportFilters) => Promise<Section[] | { sections: Section[]; notes: string[] }>>)[name](ctx, f);
   const { sections, notes } = Array.isArray(r) ? { sections: r, notes: [] } : r;
   return { name, title: REPORTS[name].title, sections, notes };

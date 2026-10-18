@@ -69,6 +69,10 @@ export default async function ReportPage({ params, searchParams }: PageProps<"/r
           </label>
           <label className="label">As of (blank = now)<input type="date" name="asOf" defaultValue={raw.asOf} className="input" /></label>
         </>}
+        {f.includes("lot") && <>
+          <label className="label">Batch no.<input name="batchNo" defaultValue={raw.batchNo} className="input" /></label>
+          <label className="label">Serial no.<input name="serialNo" defaultValue={raw.serialNo} className="input" /></label>
+        </>}
         <button className="btn-primary">Run</button>
       </form>
 
