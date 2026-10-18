@@ -120,6 +120,7 @@ describe("V1.5 report numbers", () => {
       expect(rowsOf(slow).find((x) => x.sku === "TSHIRT-RED-M")).toMatchObject({ status: "slow", qty: "15", value: "75", idle_days: 100 });
       expect(rowsOf(slow).every((x) => x.status === "slow")).toBe(true);
       await transaction((t) => updateSettings(t, w.ctx, { slowStockDays: 30, deadStockDays: 60 }));
+      await expect(transaction((t) => updateSettings(t, w.ctx, { slowStockDays: 61 }))).rejects.toMatchObject({ code: "validation_error" });
       const dead = await runReport(w.ctx, "dead-slow", F({ warehouseId: A }));
       expect(rowsOf(dead).every((x) => x.status === "dead")).toBe(true);
       expect(dead.notes[0]).toMatch(/≥ 30 days.*≥ 60 days/);

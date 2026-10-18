@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Prisma } from "@/generated/prisma/client";
 import { writeAudit } from "@/server/core/audit";
 import { requirePermission, type Ctx } from "@/server/core/ctx";
+import { AppError } from "@/server/core/errors";
 import { db, type Tx } from "@/server/db";
 
 // T2.6 company settings. Each key has a default here, so a missing row is never an error.
@@ -53,6 +54,7 @@ export async function updateSettings(tx: Tx, ctx: Ctx, patch: Partial<Settings>)
   await requirePermission(ctx, "settings.manage");
   const before = await readSettings(tx, ctx.companyId);
   const after = SettingsSchema.parse({ ...before, ...patch });
+  if (after.deadStockDays < after.slowStockDays) throw new AppError("validation_error", "deadStockDays must be ≥ slowStockDays (doc 16 RP-12)");
   const { currency, ...rest } = after;
   if (currency !== before.currency) await tx.company.update({ where: { id: ctx.companyId }, data: { currency } });
   for (const [key, value] of Object.entries(rest)) {
