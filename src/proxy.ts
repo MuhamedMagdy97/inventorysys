@@ -4,7 +4,7 @@ import { hit } from "@/server/rate-limit";
 // Doc 26 request guards for /api, in one place so route handlers stay untouched:
 // rate limits (sign-in, reserve, lookup), CORS allowlist, and an Origin check on
 // state-changing requests (CSRF defence in depth on top of SameSite cookies).
-// Static security headers live in next.config.ts.
+// The CSP (per-request nonce) is set here too; other security headers live in next.config.ts.
 
 type Rule = { match: (path: string) => boolean; limit: number; by: "ip" | "client" };
 export const RULES: Rule[] = [
@@ -60,8 +60,9 @@ const CORS_HEADERS = {
   "Access-Control-Max-Age": "600",
 };
 
-export async function proxy(req: NextRequest) {
-  const path = req.nextUrl.pathname;  const origin = req.headers.get("origin");
+async function guardApi(req: NextRequest) {
+  const path = req.nextUrl.pathname;
+  const origin = req.headers.get("origin");
   const crossAllowed = !!origin && !sameOrigin(req, origin) && allowlist().includes(origin);
   const cors: Record<string, string> = crossAllowed ? { "Access-Control-Allow-Origin": origin!, Vary: "Origin" } : {};
 
@@ -87,4 +88,39 @@ export async function proxy(req: NextRequest) {
   return next;
 }
 
-export const config = { matcher: "/api/:path*" };
+// T12.2 (doc 26): nonce CSP. Next reads the nonce from the request's CSP header and stamps
+// it on its own scripts, so every page renders per request. style-src keeps 'unsafe-inline'
+// because React style attributes can't carry a nonce.
+export function csp(nonce: string, dev = process.env.NODE_ENV === "development") {
+  return [
+    "default-src 'self'",
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${dev ? " 'unsafe-eval'" : ""}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' blob: data:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
+
+export async function proxy(req: NextRequest) {
+  const policy = csp(btoa(crypto.randomUUID()));
+  const headers = new Headers(req.headers);
+  headers.set("content-security-policy", policy);
+  const res = /^\/api(\/|$)/.test(req.nextUrl.pathname) ? await guardApi(req) : NextResponse.next({ request: { headers } });
+  res.headers.set("content-security-policy", policy);
+  return res;
+}
+
+export const config = {
+  matcher: [
+    "/api/:path*",
+    { // pages: skip static assets and link prefetches (per the Next CSP guide)
+      source: "/((?!api|_next/static|_next/image|favicon.ico).*)",
+      missing: [{ type: "header", key: "next-router-prefetch" }, { type: "header", key: "purpose", value: "prefetch" }],
+    },
+  ],
+};

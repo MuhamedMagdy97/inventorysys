@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { afterEach, expect, test } from "vitest";
-import { proxy } from "./proxy";
+import { csp, proxy } from "./proxy";
 
 const req = (path: string, init: { method?: string; headers?: Record<string, string> } = {}) =>
   new NextRequest(`http://app.test${path}`, { method: init.method ?? "POST", headers: { host: "app.test", ...init.headers } });
@@ -43,4 +43,15 @@ test("T10.3: CORS allowlist + Origin check on state-changing requests", async ()
   expect((await proxy(req("/api/products", { headers: { origin: "http://app.test" } }))).status).toBe(200); // same origin
   const read = await proxy(req("/api/products", { method: "GET", headers: { origin: "https://evil.example" } }));
   expect([read.status, read.headers.get("access-control-allow-origin")]).toEqual([200, null]); // browser blocks the read
+});
+
+test("T12.2: pages and API get a per-request nonce CSP; prod script-src has no 'unsafe-inline'", async () => {
+  const page = await proxy(req("/products", { method: "GET" }));
+  const policy = page.headers.get("content-security-policy")!;
+  const script = policy.split("; ").find((d) => d.startsWith("script-src "))!;
+  expect(script).toMatch(/^script-src 'self' 'nonce-[A-Za-z0-9+/=]{16,}' 'strict-dynamic'$/); // test env = not dev
+  expect((await proxy(req("/products", { method: "GET" }))).headers.get("content-security-policy")).not.toBe(policy); // fresh per request
+  expect(page.headers.get("x-middleware-request-content-security-policy")).toBe(policy); // forwarded so Next can stamp the nonce
+  expect((await proxy(req("/api/products", { method: "GET" }))).headers.get("content-security-policy")).toContain("'nonce-");
+  expect(csp("n", true)).toContain("'unsafe-eval'"); // dev only
 });

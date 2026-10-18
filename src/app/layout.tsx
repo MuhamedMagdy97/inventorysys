@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { connection } from "next/server";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -17,7 +18,8 @@ export const metadata: Metadata = {
   description: "Multi-warehouse inventory management",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  await connection(); // nonce CSP (doc 26): every page renders per request so Next can stamp the nonce
   return (
     <html
       lang="en"
