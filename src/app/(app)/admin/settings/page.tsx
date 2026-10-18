@@ -21,6 +21,8 @@ async function saveSettings(_: ActionState, form: FormData): Promise<ActionState
     approvalSlaHours: Number(form.get("approvalSlaHours")),
     countRecountPct: Number(form.get("countRecountPct")),
     expiryAlertDays: Number(form.get("expiryAlertDays")),
+    slowStockDays: Number(form.get("slowStockDays")),
+    deadStockDays: Number(form.get("deadStockDays")),
   }));
 }
 
@@ -70,6 +72,14 @@ export default async function SettingsPage() {
             <label className="label">
               Alert batches expiring within (days)
               <input name="expiryAlertDays" type="number" min={1} max={365} step={1} defaultValue={s.expiryAlertDays} required className="input" />
+            </label>
+            <label className="label">
+              Slow stock after no outbound movement for (days)
+              <input name="slowStockDays" type="number" min={1} max={3650} step={1} defaultValue={s.slowStockDays} required className="input" />
+            </label>
+            <label className="label">
+              Dead stock after no outbound movement for (days)
+              <input name="deadStockDays" type="number" min={1} max={3650} step={1} defaultValue={s.deadStockDays} required className="input" />
             </label>
           </div>
           <p className="text-xs text-muted">Approval limits are set per role grant on the Roles page.</p>
