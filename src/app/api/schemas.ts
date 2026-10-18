@@ -178,3 +178,8 @@ export const ReserveBody = z.object({
   channel: z.enum(["pos", "web", "marketplace", "api"]).optional(), // staff only; API keys act as their own channel (SO-06)
   serials: z.array(z.string().max(100)).max(10000).optional(), // POS sale of serialized items (S-02)
 });
+
+// Part 11 reorder engine (doc 09 §6, RO-05).
+export const ReorderCreate = z.object({
+  lines: z.array(z.object({ variantId: zId, warehouseId: zId, supplierId: zId, qty: zQty4 })).min(1).max(500),
+});
