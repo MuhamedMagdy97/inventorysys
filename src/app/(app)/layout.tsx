@@ -16,7 +16,7 @@ const NAV = [
   { href: "/transfers", label: "Transfers", grant: "inventory.view" },
   { href: "/adjustments", label: "Adjustments", grant: "inventory.view" },
   { href: "/counts", label: "Counts", grant: "inventory.view" },
-  { href: "/batches", label: "Batches · FEFO", grant: "inventory.view" },
+  { href: "/batches", label: "Batches", grant: "inventory.view" },
   { href: "/serials", label: "Serials", grant: "inventory.view" },
   { href: "/returns", label: "Returns", grant: ["purchases.view", "purchases.return_ship", "sales.view"] },
   { href: "/inspection", label: "Inspection", grant: ["inventory.inspect", "sales.return_inspect"] },

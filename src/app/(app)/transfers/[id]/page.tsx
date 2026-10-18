@@ -116,7 +116,7 @@ export default async function TransferPage({ params }: PageProps<"/transfers/[id
                           {r.pickRank}. {r.batchNo} · {r.expiryDate?.toISOString().slice(0, 10) ?? "no expiry"} · {n(r.available)} avail{r.batchId === l.batchId && " ← this line"}
                         </span>
                       ))}
-                      {(fefo.get(l.variantId)?.find((r) => r.batchId === l.batchId)?.pickRank ?? 1) > 1 && <span role="status" className="text-amber-700">A batch ahead in FEFO order is available.</span>}
+                      {fefo.get(l.variantId)?.some((r) => r.pickRank! < (fefo.get(l.variantId)!.find((x) => x.batchId === l.batchId)?.pickRank ?? 0) && Number(r.available) > 0) && <span role="status" className="text-amber-700">A batch ahead in FEFO order has stock available.</span>}
                     </td>
                   </tr>
                 ))}
