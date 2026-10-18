@@ -10,6 +10,7 @@ type Rule = { match: (path: string) => boolean; limit: number; by: "ip" | "clien
 export const RULES: Rule[] = [
   // Sign-in + TOTP verify: per IP. Per-account brute force is also stopped by the 5-fail lockout.
   { match: (p) => p.startsWith("/api/auth/sign-in/") || p.startsWith("/api/auth/two-factor/"), limit: 10, by: "ip" },
+  { match: (p) => p === "/api/step-up", limit: 10, by: "ip" }, // re-verify password/TOTP, same as sign-in (doc 26)
   { match: (p) => p === "/api/reservations" || p === "/api/pos-sales", limit: 300, by: "client" },
   { match: (p) => p === "/api/products/lookup", limit: 600, by: "client" }, // scan bursts
 ];

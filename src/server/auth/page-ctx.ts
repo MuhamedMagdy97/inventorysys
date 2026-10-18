@@ -4,7 +4,7 @@ import { refresh } from "next/cache";
 import type { Ctx } from "@/server/core/ctx";
 import { AppError } from "@/server/core/errors";
 import { execute } from "@/server/core/execute";
-import type { Tx } from "@/server/db";
+import { db, type Tx } from "@/server/db";
 import { sessionCtx } from "./session-ctx";
 
 // Server Components / Server Actions: ctx from the session cookie, or send the user
@@ -21,7 +21,7 @@ export async function pageCtx(): Promise<Ctx> {
   }
 }
 
-export type ActionState = { ok?: string; error?: string; at?: number } | null;
+export type ActionState = { ok?: string; error?: string; stepUp?: { totp: boolean }; at?: number } | null;
 
 // One mutating Server Action: session ctx → domain fn in a transaction (execute) →
 // refresh the page. Domain errors come back as a message for <ActionForm>.
@@ -37,6 +37,11 @@ export async function runAction<T>(
   try {
     result = (await execute(ctx, { scope, idempotencyKey, request: { scope } }, (tx) => fn(tx, ctx))) as T;
   } catch (e) {
+    if (e instanceof AppError && (e.details as { reason?: string } | undefined)?.reason === "step_up_required") {
+      // <ActionForm> asks for the password (+ TOTP) and retries (doc 26 step-up).
+      const u = await db.user.findUnique({ where: { id: ctx.userId }, select: { twoFactorEnabled: true } });
+      return { error: e.message, stepUp: { totp: !!u?.twoFactorEnabled }, at: Date.now() };
+    }
     if (e instanceof AppError) return { error: e.message, at: Date.now() };
     if (e && typeof e === "object" && "issues" in e) return { error: "Invalid input", at: Date.now() };
     throw e;

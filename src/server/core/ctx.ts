@@ -57,7 +57,7 @@ export async function requirePermission(
     }
   }
   if (!denial && needsStepUp(ctx, any)) {
-    denial = { message: "Please sign in again to confirm this action", details: { reason: "step_up_required", maxAgeMinutes: STEP_UP_MINUTES } };
+    denial = { message: "Please confirm it's you to continue", details: { reason: "step_up_required", maxAgeMinutes: STEP_UP_MINUTES } };
   }
   if (!denial) return;
   throw await deny(ctx, denial.message, denial.details, { type: "permission", id: any.join("|"), warehouseId: opts.warehouseId });

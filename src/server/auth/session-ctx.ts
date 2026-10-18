@@ -64,6 +64,9 @@ export async function requestCtx(req: Request, requestId: string): Promise<Ctx> 
 export async function sessionCtx(headers: Headers, requestId: string): Promise<Ctx> {
   const session = await auth.api.getSession({ headers });
   if (!session) throw new AppError("forbidden", "Not signed in", { reason: "unauthenticated" });
-  // A new sign-in creates a new session, so createdAt = last (re-)authentication (doc 26 step-up).
-  return { ...(await buildCtx(session.user.id, { requestId, channel: "web" })), authAt: new Date(session.session.createdAt) };
+  // Last (re-)authentication (doc 26 step-up): a sign-in creates a new session (createdAt);
+  // a re-verify stamps step_up_at on this session (src/server/auth/step-up.ts).
+  const { createdAt, stepUpAt } = session.session;
+  const authAt = new Date(Math.max(new Date(createdAt).getTime(), stepUpAt ? new Date(stepUpAt).getTime() : 0));
+  return { ...(await buildCtx(session.user.id, { requestId, channel: "web" })), authAt };
 }
