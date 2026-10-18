@@ -42,7 +42,7 @@ export default async function SerialPage({ params }: PageProps<"/serials/[id]">)
               <span className="font-medium">
                 {e.baseline ? <>State when history began: {label(e.toStatus)}</> : e.fromStatus ? <>{label(e.fromStatus)} → {label(e.toStatus)}</> : <>Created: {label(e.toStatus)}</>}
               </span>
-              <span className="text-sm text-muted">{at(e.at)} · {e.warehouseCode ?? "—"}{e.binCode && ` / ${e.binCode}`}</span>
+              <span className="text-sm text-muted">{at(e.at)} · {e.warehouseCode ?? "another warehouse"}{e.binCode && ` / ${e.binCode}`}</span>
             </div>
             {e.movements.length > 0 && (
               <table className="table mt-2">
@@ -65,7 +65,7 @@ export default async function SerialPage({ params }: PageProps<"/serials/[id]">)
           </li>
         ))}
       </ol>
-      <p className="text-xs text-muted">Each step lists the stock movements posted with it for this SKU. Movements in warehouses outside your access are hidden.</p>
+      <p className="text-xs text-muted">Each step lists the stock movements posted with it for this SKU. Steps in warehouses outside your access show without their location, and their movements are hidden.</p>
     </div>
   );
 }

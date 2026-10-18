@@ -117,6 +117,14 @@ describe("serial lifecycle (doc 14 §6)", () => {
     // Scope: the unit now sits in B — invisible to an A-only user, history forbidden.
     expect((await listSerials(onlyA, { q: serialNo, page: 1, perPage: 10 })).total).toBe(0);
     await expect(getSerialHistory(onlyA, unit[0].id)).rejects.toMatchObject({ code: "forbidden" });
+    // A B-only user sees the whole status trail, but the A steps carry no warehouse/bin and no movements (doc 02 §3).
+    const hb = await getSerialHistory({ ...w.ctx, warehouseIds: [B] }, unit[0].id);
+    expect(hb.events.map((e) => [e.fromStatus, e.toStatus, e.warehouseId, e.warehouseCode, e.binId, e.binCode, e.movements.map((m) => m.type)])).toEqual([
+      [null, "in_stock", null, null, null, null, []],
+      ["in_stock", "in_transit", null, null, null, null, []],
+      ["in_transit", "in_stock", B, "WH-B", expect.any(String), "RECV", ["transfer_in"]],
+      ["in_stock", "sold", B, "WH-B", expect.any(String), "RECV", ["sale_fulfilment"]],
+    ]);
     await expect(db.$executeRaw`DELETE FROM serial_unit_event WHERE serial_unit_id = ${unit[0].id}`).rejects.toThrow(/append-only/);
   });
 });

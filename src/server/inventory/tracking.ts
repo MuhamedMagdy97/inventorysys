@@ -119,10 +119,12 @@ export async function getSerialHistory(ctx: Ctx, serialUnitId: string) {
   const byId = new Map(movements.map((m) => [m.id, m]));
   return {
     unit,
+    // Doc 02 §3: steps in warehouses outside scope keep their status change, not where they happened.
     events: events.map((e) => ({
       ...e,
-      warehouseCode: whs.find((w) => w.id === e.warehouseId)?.code ?? null,
-      binCode: bins.find((b) => b.id === e.binId)?.code ?? null,
+      ...(inScope(ctx, e.warehouseId)
+        ? { warehouseCode: whs.find((w) => w.id === e.warehouseId)?.code ?? null, binCode: bins.find((b) => b.id === e.binId)?.code ?? null }
+        : { warehouseId: null, binId: null, warehouseCode: null, binCode: null }),
       movements: rows.filter((r) => r.event_id === e.id && r.movement_id && byId.has(r.movement_id))
         .map((r) => byId.get(r.movement_id!)!) as (InventoryMovement & { warehouse: { code: string }; bin: { code: string } | null })[],
     })),
