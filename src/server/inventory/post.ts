@@ -3,6 +3,7 @@ import { writeAudit } from "@/server/core/audit";
 import type { Ctx } from "@/server/core/ctx";
 import { AppError } from "@/server/core/errors";
 import type { Tx } from "@/server/db";
+import { emitStockLevels } from "@/server/webhooks/webhooks";
 
 // THE ledger writer (doc 07/08). Every stock change in the system goes through
 // postMovements(): lock → validate invariants → update balances → append
@@ -269,6 +270,8 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
       allocations: [...pos.values()].filter((p) => p.touched).map((p) => ({ id: p.id, qtyReserved: p.reserved })),
     },
   });
+  // Part 11 (doc 24): stock.low / stock.out webhooks when available crosses a threshold.
+  await emitStockLevels(tx, ctx, legs.map((l) => ({ variantId: l.variantId, warehouseId: l.warehouseId, delta: l.d.onHand.minus(l.d.reserved) })), { sourceType: input.sourceType, sourceId: input.sourceId });
   return { movements, auditId: audit.id, replayed: false };
 }
 
