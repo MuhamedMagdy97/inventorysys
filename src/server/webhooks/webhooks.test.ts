@@ -123,6 +123,15 @@ describe("delivery", () => {
     await run();
   });
 
+  test("reserve emits stock.out when subscribed (hook precomputed outside the position lock)", async () => {
+    const before = (await events()).length;
+    await transaction((tx) => reserve(tx, w.ctx, { variantId: v(), warehouseId: w.warehouse.id, qty: 2 })); // available 2 → 0
+    const fresh = (await events()).slice(before);
+    expect(fresh.map((e) => e.type)).toEqual(["stock.out"]);
+    expect(fresh[0].payload).toMatchObject({ sourceType: "reservation", available: "0", availableBefore: "2" });
+    await run();
+  });
+
   test("retry on 500 with backoff, same event id; gives up after 6 attempts", async () => {
     await transaction((tx) => emit(tx, w.ctx, "reservation.expired", { reservationId: "r1" }));
     reply = 500;
@@ -165,7 +174,7 @@ describe("delivery", () => {
   test("outbox rows roll back with the posting", async () => {
     await post(v(), 50);
     const before = await db.webhookEvent.count({ where: { companyId: w.company.id } });
-    const avail = 52; // on hand 59, 7 still reserved by the stock.low test
+    const avail = 50; // on hand 59, 9 still reserved by the stock.low + reserve tests
     await expect(transaction(async (tx) => {
       await postMovements(tx, w.ctx, {
         sourceType: "test", sourceId: `t-${++n}`,

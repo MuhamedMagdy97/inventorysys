@@ -38,6 +38,10 @@ export async function emit(tx: Tx, ctx: Pick<Ctx, "companyId">, type: EventType,
   return ev.id;
 }
 
+// Does the company have an active stock.low / stock.out endpoint? (PostInput.stockHooks)
+export const hasStockHooks = async (tx: Tx, companyId: string) =>
+  (await tx.webhookEndpoint.count({ where: { companyId, status: "active", events: { hasSome: ["stock.low", "stock.out"] } } })) > 0;
+
 // stock.low / stock.out, edge-triggered on warehouse-level available (doc 24). Called by
 // postMovements with each leg's change of available (Δon_hand − Δreserved), after the
 // balances are written in this tx. Only decreases can cross a threshold downwards.
@@ -45,7 +49,9 @@ export async function emitStockLevels(
   tx: Tx, ctx: Pick<Ctx, "companyId">,
   changes: { variantId: string; warehouseId: string; delta: Prisma.Decimal }[],
   source: { sourceType: string; sourceId: string },
+  subscribed?: boolean, // precomputed by hot paths (reserve) before their locks; omitted → checked here
 ) {
+  if (subscribed === false) return;
   const sum = new Map<string, { variantId: string; warehouseId: string; delta: Prisma.Decimal }>();
   for (const c of changes) {
     const k = `${c.variantId}|${c.warehouseId}`;
@@ -54,10 +60,7 @@ export async function emitStockLevels(
   }
   const drops = [...sum.values()].filter((c) => c.delta.lt(0));
   if (!drops.length) return;
-  const subscribed = await tx.webhookEndpoint.count({
-    where: { companyId: ctx.companyId, status: "active", events: { hasSome: ["stock.low", "stock.out"] } },
-  });
-  if (!subscribed) return;
+  if (subscribed === undefined && !(await hasStockHooks(tx, ctx.companyId))) return;
   const rows = await tx.$queryRaw<{ variant_id: string; warehouse_id: string; sku: string; code: string; available: Prisma.Decimal; reorder_point: Prisma.Decimal | null }[]>`
     SELECT k.v AS variant_id, k.w AS warehouse_id, pv.sku, wh.code, s.reorder_point,
       COALESCE((SELECT SUM(b.on_hand) FROM stock_balance b WHERE b.variant_id = k.v AND b.warehouse_id = k.w), 0)

@@ -83,6 +83,7 @@ export type PostInput = {
   // read is skipped too (the unique leg key in the DB still rejects a duplicate).
   prelocked?: Map<string, PosState>;
   auditAfter?: Record<string, unknown>; // merged into the posting's audit row (reserve: one row, not two)
+  stockHooks?: boolean; // hasStockHooks() precomputed before the locks (reserve); omitted → emitStockLevels checks
 };
 
 export type PostResult = {
@@ -275,7 +276,7 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
     },
   });
   // Part 11 (doc 24): stock.low / stock.out webhooks when available crosses a threshold.
-  await emitStockLevels(tx, ctx, legs.map((l) => ({ variantId: l.variantId, warehouseId: l.warehouseId, delta: l.d.onHand.minus(l.d.reserved) })), { sourceType: input.sourceType, sourceId: input.sourceId });
+  await emitStockLevels(tx, ctx, legs.map((l) => ({ variantId: l.variantId, warehouseId: l.warehouseId, delta: l.d.onHand.minus(l.d.reserved) })), { sourceType: input.sourceType, sourceId: input.sourceId }, input.stockHooks);
   return { movements, auditId: audit.id, replayed: false };
 }
 
