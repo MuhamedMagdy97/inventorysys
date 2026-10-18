@@ -11,6 +11,7 @@ const eslintConfig = defineConfig([
     ".next/**",
     "out/**",
     "build/**",
+    "dist/**", // npm run build:worker output
     "next-env.d.ts",
     ".claude/**", // agent worktrees (own checkouts, linted there)
   ]),

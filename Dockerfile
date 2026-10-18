@@ -1,8 +1,8 @@
-# T10.4 images. One Dockerfile, two targets:
-#   docker build --target web    -t inventory-web .
-#   docker build --target worker -t inventory-worker .
-# Both run as the non-root `node` user. Config comes only from env at runtime (doc 26).
-# Migrations: run the worker image once per deploy: `npx prisma migrate deploy`.
+# T10.4/T12.5 images. One Dockerfile, three targets:
+#   docker build --target web     -t inventory-web .
+#   docker build --target worker  -t inventory-worker .
+#   docker build --target migrate -t inventory-migrate .   # once per deploy: prisma migrate deploy
+# All run as the non-root `node` user. Config comes only from env at runtime (doc 26).
 
 FROM node:24-bookworm-slim AS base
 WORKDIR /app
@@ -29,15 +29,26 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "server.js"]
 
-# Worker: pg-boss jobs via tsx (+ prisma CLI for `migrate deploy`).
-# ponytail: ships the full node_modules (~dev deps too); bundle the worker if image size matters.
+# Worker: one esbuild bundle (Prisma client + inlined query-compiler wasm, adapter-pg, pg-boss),
+# no node_modules. `require("pg-native")` stays unresolved; pg only loads it when asked to.
+FROM deps AS worker-build
+COPY . .
+RUN npm run build:worker
+
 FROM base AS worker
 ENV NODE_ENV=production
-COPY --from=deps --chown=node:node /app/node_modules ./node_modules
-COPY --chown=node:node package.json prisma.config.ts tsconfig.json ./
-COPY --chown=node:node prisma ./prisma
-COPY --from=deps --chown=node:node /app/src/generated ./src/generated
-COPY --chown=node:node src ./src
-COPY --chown=node:node scripts ./scripts
+COPY --from=worker-build --chown=node:node /app/dist ./dist
 USER node
-CMD ["npx", "tsx", "src/worker/index.ts"]
+CMD ["node", "--enable-source-maps", "dist/worker.mjs"]
+
+# Migrate: prisma CLI + dotenv only, pruned from the lockfile tree (no network).
+FROM deps AS migrate-deps
+RUN node -e "const fs=require('fs'),p=require('./package.json');p.dependencies={prisma:p.devDependencies.prisma,dotenv:p.devDependencies.dotenv};delete p.devDependencies;delete p.scripts;fs.writeFileSync('package.json',JSON.stringify(p))" \
+  && npm prune --omit=dev
+
+FROM base AS migrate
+COPY --from=migrate-deps --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node package.json prisma.config.ts ./
+COPY --chown=node:node prisma ./prisma
+USER node
+CMD ["npx", "prisma", "migrate", "deploy"]

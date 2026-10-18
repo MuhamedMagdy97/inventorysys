@@ -2,7 +2,7 @@
 # docs/inventory/07-build/02-deploy.md) — DATABASE_URL points at it; nothing here stores data.
 #
 #   cp .env.example .env.prod   # fill real values from the secret store; never commit it
-#   docker compose -f docker-compose.prod.yml --env-file .env.prod build
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod --profile ops build   # web, worker, migrate
 #   docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm migrate
 #   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d web worker
 #   # daily (host cron, e.g. 02:30 UTC):
@@ -44,7 +44,8 @@ services:
     profiles: ["scan"]
 
   migrate: # one-off per deploy, before `up`
-    image: inventory-worker
+    build: { context: ., target: migrate }
+    image: inventory-migrate
     environment: *env
     command: ["npx", "prisma", "migrate", "deploy"]
     profiles: ["ops"]

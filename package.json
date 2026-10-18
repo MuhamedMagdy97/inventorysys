@@ -17,6 +17,7 @@
     "db:studio": "prisma studio",
     "db:seed": "prisma db seed",
     "worker": "tsx --env-file-if-exists=.env src/worker/index.ts",
+    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node24 --format=esm --sourcemap --outfile=dist/worker.mjs \"--banner:js=import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
     "postinstall": "prisma generate"
   },
   "dependencies": {
@@ -41,6 +42,7 @@
     "@types/react-dom": "^19",
     "babel-plugin-react-compiler": "1.0.0",
     "dotenv": "^18.0.5",
+    "esbuild": "^0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
     "prisma": "7.10.0",
