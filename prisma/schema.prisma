@@ -903,9 +903,11 @@ model VariantWarehouseSettings {
   reorderQty   Decimal? @map("reorder_qty") @db.Decimal(18, 4)
   maxStock     Decimal? @map("max_stock") @db.Decimal(18, 4)
   updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+  preferredSupplierId String? @map("preferred_supplier_id") // RO-01 (doc 09 §6)
 
   variant   ProductVariant @relation(fields: [variantId], references: [id])
   warehouse Warehouse      @relation(fields: [warehouseId], references: [id])
+  preferredSupplier Supplier? @relation(fields: [preferredSupplierId], references: [id])
 
   @@id([variantId, warehouseId])
   @@map("variant_warehouse_settings")
@@ -956,6 +958,7 @@ model Supplier {
   documents       SupplierDocument[]
   purchaseOrders  PurchaseOrder[]
   purchaseReturns PurchaseReturn[]
+  reorderSettings VariantWarehouseSettings[]
 
   @@unique([companyId, code])
   @@map("supplier")
@@ -1159,6 +1162,7 @@ model GoodsReceipt {
   reversal           GoodsReceipt?       @relation("ReceiptReversal")
   lines              ReceiptLine[]
   inventoryMovements InventoryMovement[]
+  landedCosts        LandedCost[]
 
   @@unique([companyId, number])
   @@index([poId])
@@ -1200,6 +1204,7 @@ model ReceiptLine {
   bin                 Bin                  @relation(fields: [binId], references: [id])
   serials             SerialUnit[]
   purchaseReturnLines PurchaseReturnLine[]
+  landedCostLines     LandedCostLine[]
 
   @@unique([receiptId, lineNo])
   @@index([poLineId])
@@ -1925,4 +1930,70 @@ model WebhookDelivery {
   @@index([status, nextAttemptAt])
   @@index([endpointId, createdAt])
   @@map("webhook_delivery")
+
+// ───────────── Part 11: landed-cost allocation (doc 15 §1.1) ─────────────
+
+enum LandedCostStatus {
+  submitted
+  posted
+  rejected
+
+  @@map("landed_cost_status")
+}
+
+enum LandedCostMethod {
+  value
+  qty
+
+  @@map("landed_cost_method")
+}
+
+// Charges on one goods receipt, allocated to its lines and posted into WAC as
+// cost_correction movements on approval. Never edited; a correction is a new document.
+model LandedCost {
+  id          String           @id @default(uuid(7))
+  companyId   String           @map("company_id")
+  number      String // LC-YYYY-00001
+  receiptId   String           @map("receipt_id")
+  warehouseId String           @map("warehouse_id") // = receipt warehouse (scope)
+  method      LandedCostMethod @default(value)
+  status      LandedCostStatus @default(submitted)
+  charges     Json // [{ kind: shipping | duty | tax | other, amount }]
+  total       Decimal          @db.Decimal(18, 4)
+  capitalized Decimal?         @db.Decimal(18, 4) // set at posting
+  expensed    Decimal?         @db.Decimal(18, 4)
+  note        String?
+  createdBy   String           @map("created_by")
+  decidedBy   String?          @map("decided_by")
+  decidedAt   DateTime?        @map("decided_at")
+  version     Int              @default(0)
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  receipt GoodsReceipt     @relation(fields: [receiptId], references: [id])
+  lines   LandedCostLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@index([receiptId])
+  @@map("landed_cost")
+}
+
+model LandedCostLine {
+  id            String   @id @default(uuid(7))
+  landedCostId  String   @map("landed_cost_id")
+  receiptLineId String   @map("receipt_line_id")
+  variantId     String   @map("variant_id")
+  batchId       String?  @map("batch_id")
+  basisQty      Decimal  @map("basis_qty") @db.Decimal(18, 4)
+  basisValue    Decimal  @map("basis_value") @db.Decimal(18, 4)
+  allocated     Decimal  @db.Decimal(18, 4)
+  capitalized   Decimal? @db.Decimal(18, 4) // into stock value (cost_correction)
+  expensed      Decimal? @db.Decimal(18, 4) // share of units already gone
+
+  landedCost  LandedCost  @relation(fields: [landedCostId], references: [id])
+  receiptLine ReceiptLine @relation(fields: [receiptLineId], references: [id])
+
+  @@index([landedCostId])
+  @@map("landed_cost_line")
 }

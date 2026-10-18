@@ -4,6 +4,7 @@ import { bool, clearable, str, version } from "@/app/ui/form";
 import { runAction, type ActionState } from "@/server/auth/page-ctx";
 import { variantByCode as variantBySku } from "@/server/catalog/catalog";
 import type { Ctx } from "@/server/core/ctx";
+import { approveLandedCost, CHARGE_KINDS, createLandedCost, rejectLandedCost } from "@/server/purchasing/landed-cost";
 import {
   approvePo, cancelPo, closePo, createPo, orderPo, reducePoLine, rejectPo, submitPo, updatePo, type PoLineInput,
 } from "@/server/purchasing/purchase-orders";
@@ -97,4 +98,18 @@ export async function excessAction(receiptLineId: string, _: ActionState, f: For
   return runAction("receipts.excess", (tx, ctx) => decideExcess(tx, ctx, {
     receiptLineId, approve: f.get("decision") === "approve", comment: clearable(f, "comment"),
   }), "Decided");
+}
+
+// Landed cost (doc 15 §1.1): charge.<kind> amounts; approval posts into WAC.
+export async function createLandedCostAction(receiptId: string, key: string, _: ActionState, f: FormData): Promise<ActionState> {
+  return runAction("landed_costs.create", (tx, ctx) => createLandedCost(tx, ctx, {
+    receiptId, method: f.get("method") === "qty" ? "qty" : "value", note: clearable(f, "note"),
+    charges: CHARGE_KINDS.map((kind) => ({ kind, amount: str(f, `charge.${kind}`) ?? "0" })),
+  }), "Sent for approval", undefined, key);
+}
+
+export async function decideLandedCostAction(id: string, key: string, _: ActionState, f: FormData): Promise<ActionState> {
+  return runAction<{ id: string; status: string }>("landed_costs.decide", (tx, ctx) => f.get("decision") === "reject"
+    ? rejectLandedCost(tx, ctx, { id, version: version(f), comment: str(f, "comment") ?? "" })
+    : approveLandedCost(tx, ctx, { id, version: version(f), comment: clearable(f, "comment") }), "Decided", undefined, key);
 }

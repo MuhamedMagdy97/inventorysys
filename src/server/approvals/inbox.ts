@@ -7,6 +7,7 @@ import { applyCount, approveCount, countValue, recountCount } from "@/server/inv
 import { dec } from "@/server/inventory/post";
 import { approveTransfer, decideVariance, rejectTransfer } from "@/server/inventory/transfers";
 import { approvePo, rejectPo } from "@/server/purchasing/purchase-orders";
+import { approveLandedCost, rejectLandedCost } from "@/server/purchasing/landed-cost";
 import { decideExcess } from "@/server/purchasing/receipts";
 import { approvePurchaseReturn, rejectPurchaseReturn, returnValue } from "@/server/returns/purchase-returns";
 import { approveSalesReturn, rejectSalesReturn, salesReturnValue } from "@/server/returns/sales-returns";
@@ -18,7 +19,7 @@ import { readSettings } from "@/server/settings/settings";
 // with a higher limit (INV-020). Reminder + escalation: src/server/notifications/jobs.ts.
 
 export type InboxItem = {
-  type: "purchase_order" | "receipt_excess" | "transfer" | "transfer_variance" | "stock_adjustment" | "adjustment_apply" | "stock_count" | "count_apply" | "purchase_return" | "sales_return";
+  type: "purchase_order" | "receipt_excess" | "transfer" | "transfer_variance" | "stock_adjustment" | "adjustment_apply" | "stock_count" | "count_apply" | "purchase_return" | "sales_return" | "landed_cost";
   id: string; // the document the decision acts on
   version: number | null;
   number: string;
@@ -168,6 +169,18 @@ export async function listInbox(ctx: Ctx): Promise<{ slaHours: number; items: In
     }
   }
 
+  if (has("inventory.adjust_approve")) {
+    const lcs = await db.landedCost.findMany({
+      where: { companyId: ctx.companyId, status: "submitted", createdBy: me }, include: { receipt: { select: { number: true, poId: true } } },
+    });
+    for (const l of scoped(lcs, (l) => l.warehouseId)) {
+      out.push({
+        type: "landed_cost", warehouseId: l.warehouseId, grant: "inventory.adjust_approve", id: l.id, version: l.version, number: l.number, summary: `Landed cost on ${l.receipt.number} (by ${l.method})`,
+        amount: l.total.toFixed(2), waitingSince: l.createdAt, overLimit: !limitOk("inventory.adjust_approve", l.total.toString()), link: `/purchase-orders/${l.receipt.poId}`,
+      });
+    }
+  }
+
   const { approvalSlaHours } = await readSettings(db, ctx.companyId);
   const items = out
     .map((i) => ({ ...i, ageHours: ago(i.waitingSince), overdue: ago(i.waitingSince) >= approvalSlaHours }))
@@ -211,5 +224,7 @@ export async function decide(
       return input.approve ? approvePurchaseReturn(tx, ctx, { id: input.id, version: v, comment }) : rejectPurchaseReturn(tx, ctx, { id: input.id, version: v, comment: comment ?? "" });
     case "sales_return":
       return input.approve ? approveSalesReturn(tx, ctx, { id: input.id, version: v, comment }) : rejectSalesReturn(tx, ctx, { id: input.id, version: v, comment: comment ?? "" });
+    case "landed_cost":
+      return input.approve ? approveLandedCost(tx, ctx, { id: input.id, version: v, comment }) : rejectLandedCost(tx, ctx, { id: input.id, version: v, comment: comment ?? "" });
   }
 }

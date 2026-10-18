@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Prisma } from "@/generated/prisma/client";
 import { writeAudit } from "@/server/core/audit";
 import { requirePermission, type Ctx } from "@/server/core/ctx";
+import { AppError } from "@/server/core/errors";
 import { db, type Tx } from "@/server/db";
 
 // T2.6 company settings. Each key has a default here, so a missing row is never an error.
@@ -17,6 +18,8 @@ export const SettingsSchema = z.object({
   approvalSlaHours: z.number().int().min(1).max(720), // N-04: inbox flags older approvals as overdue
   countRecountPct: z.number().min(0).max(100), // doc 23: |variance| above this % of system qty forces a recount
   expiryAlertDays: z.number().int().min(1).max(365), // doc 17 §1: daily "expiring" alert horizon (dashboard KPI stays 30 d, doc 16)
+  slowStockDays: z.number().int().min(1).max(3650), // doc 16 RP-12: no outbound movement this long → slow
+  deadStockDays: z.number().int().min(1).max(3650), // doc 16 RP-12: … → dead
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -29,6 +32,8 @@ const DEFAULTS: Omit<Settings, "currency"> = {
   approvalSlaHours: 48,
   countRecountPct: 10,
   expiryAlertDays: 30,
+  slowStockDays: 90,
+  deadStockDays: 180,
 };
 
 // Internal read for domain code (no permission: callers already authorized their action).
@@ -49,6 +54,7 @@ export async function updateSettings(tx: Tx, ctx: Ctx, patch: Partial<Settings>)
   await requirePermission(ctx, "settings.manage");
   const before = await readSettings(tx, ctx.companyId);
   const after = SettingsSchema.parse({ ...before, ...patch });
+  if (after.deadStockDays < after.slowStockDays) throw new AppError("validation_error", "deadStockDays must be ≥ slowStockDays (doc 16 RP-12)");
   const { currency, ...rest } = after;
   if (currency !== before.currency) await tx.company.update({ where: { id: ctx.companyId }, data: { currency } });
   for (const [key, value] of Object.entries(rest)) {
