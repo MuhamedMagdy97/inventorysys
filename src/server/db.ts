@@ -16,7 +16,7 @@ if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = db;
 export type Tx = Prisma.TransactionClient;
 
 // Interactive transaction with explicit limits: Prisma's 5 s default is too
-// short under lock contention (tech-stack rule 1).
-export function transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
-  return db.$transaction(fn, { maxWait: 10_000, timeout: 30_000 });
+// short under lock contention (tech-stack rule 1). Imports pass a longer timeout.
+export function transaction<T>(fn: (tx: Tx) => Promise<T>, timeout = 30_000): Promise<T> {
+  return db.$transaction(fn, { maxWait: 10_000, timeout });
 }
