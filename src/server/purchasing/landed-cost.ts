@@ -91,6 +91,12 @@ export async function approveLandedCost(tx: Tx, ctx: Ctx, input: { id: string; v
   const lc = await lockLandedCost(tx, ctx, input.id, input.version);
   await requirePermission(ctx, "inventory.adjust_approve", { warehouseId: lc.warehouseId, amount: lc.total });
   await requireNotCreator(ctx, lc.createdBy, { type: "landed_cost", id: lc.id });
+  // The receipt may have been reversed since create. FOR UPDATE conflicts with the FK lock
+  // a reversal insert takes on it, so a reversal can't slip in before this posting commits.
+  await tx.$executeRaw`SELECT 1 FROM goods_receipt WHERE id = ${lc.receiptId} FOR UPDATE`;
+  if (await tx.goodsReceipt.findUnique({ where: { reversalOfReceiptId: lc.receiptId }, select: { id: true } })) {
+    throw new AppError("invalid_transition", "The receipt was reversed; reject this landed cost", { reason: "receipt_reversed" });
+  }
 
   // Read valued qty under the position + cost locks (same order postMovements takes them).
   await lockPositions(tx, ctx, lc.lines.map((l) => [l.variantId, lc.warehouseId, l.batchId] as const));

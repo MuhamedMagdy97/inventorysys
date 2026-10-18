@@ -139,7 +139,12 @@ describe("landed cost → WAC (doc 15 §1.1)", () => {
     await expect(tx((t) => approveLandedCost(t, owner, { id: big.id, version: 1 }))).rejects.toMatchObject({ code: "invalid_transition" });
     expect(await db.inventoryMovement.count({ where: { sourceType: "landed_cost", sourceId: big.id } })).toBe(0);
 
+    // Submitted before the reversal → approve refused, reject still allowed, nothing capitalised.
+    const stale = await tx((t) => createLandedCost(t, w.ctx, { receiptId: r.id, charges: [{ kind: "shipping", amount: "5" }] }));
     const rev = await tx((t) => reverseReceipt(t, owner, { receiptId: r.id, reason: "mistake" }));
+    await expect(tx((t) => approveLandedCost(t, owner, { id: stale.id, version: 0 }))).rejects.toMatchObject({ code: "invalid_transition", details: { reason: "receipt_reversed" } });
+    await tx((t) => rejectLandedCost(t, owner, { id: stale.id, version: 0, comment: "receipt reversed" }));
+    expect(await db.inventoryMovement.count({ where: { sourceType: "landed_cost", sourceId: stale.id } })).toBe(0);
     await expect(tx((t) => createLandedCost(t, w.ctx, { receiptId: r.id, charges: [{ kind: "shipping", amount: "5" }] }))).rejects.toMatchObject({ code: "invalid_transition" });
     await expect(tx((t) => createLandedCost(t, w.ctx, { receiptId: rev.reversal.id, charges: [{ kind: "shipping", amount: "5" }] }))).rejects.toMatchObject({ code: "invalid_transition" });
     await consistent();
