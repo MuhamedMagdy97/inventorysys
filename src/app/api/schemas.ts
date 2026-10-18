@@ -186,3 +186,8 @@ export const LandedCostCreate = z.object({
   note: text(2000).nullable().optional(),
 });
 export const LandedCostDecision = z.object({ ...zVersion, comment: text(2000).nullable().optional() });
+
+// Part 11 reorder engine (doc 09 §6, RO-05).
+export const ReorderCreate = z.object({
+  lines: z.array(z.object({ variantId: zId, warehouseId: zId, supplierId: zId, qty: zQty4 })).min(1).max(500),
+});
