@@ -896,18 +896,18 @@ model ProductImage {
 
 // Reorder thresholds are per warehouse (doc 22, edge #37).
 model VariantWarehouseSettings {
-  companyId    String   @map("company_id")
-  variantId    String   @map("variant_id")
-  warehouseId  String   @map("warehouse_id")
-  reorderPoint Decimal? @map("reorder_point") @db.Decimal(18, 4)
-  reorderQty   Decimal? @map("reorder_qty") @db.Decimal(18, 4)
-  maxStock     Decimal? @map("max_stock") @db.Decimal(18, 4)
-  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
-  preferredSupplierId String? @map("preferred_supplier_id") // RO-01 (doc 09 §6)
+  companyId           String   @map("company_id")
+  variantId           String   @map("variant_id")
+  warehouseId         String   @map("warehouse_id")
+  reorderPoint        Decimal? @map("reorder_point") @db.Decimal(18, 4)
+  reorderQty          Decimal? @map("reorder_qty") @db.Decimal(18, 4)
+  maxStock            Decimal? @map("max_stock") @db.Decimal(18, 4)
+  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at")
+  preferredSupplierId String?  @map("preferred_supplier_id") // RO-01 (doc 09 §6)
 
-  variant   ProductVariant @relation(fields: [variantId], references: [id])
-  warehouse Warehouse      @relation(fields: [warehouseId], references: [id])
-  preferredSupplier Supplier? @relation(fields: [preferredSupplierId], references: [id])
+  variant           ProductVariant @relation(fields: [variantId], references: [id])
+  warehouse         Warehouse      @relation(fields: [warehouseId], references: [id])
+  preferredSupplier Supplier?      @relation(fields: [preferredSupplierId], references: [id])
 
   @@id([variantId, warehouseId])
   @@map("variant_warehouse_settings")
@@ -951,7 +951,7 @@ model Supplier {
   createdAt           DateTime     @default(now()) @map("created_at")
   updatedAt           DateTime     @default(now()) @updatedAt @map("updated_at")
 
-  company         Company            @relation(fields: [companyId], references: [id])
+  company         Company                    @relation(fields: [companyId], references: [id])
   contacts        SupplierContact[]
   addresses       SupplierAddress[]
   products        SupplierProduct[]
@@ -1868,6 +1868,68 @@ model Evidence {
 
   @@index([companyId, entityType, entityId])
   @@map("evidence")
+}
+
+// ───────────────────────── Part 11: outbound webhooks ─────────────────────────
+// Doc 24 "Webhooks — build decisions", doc 26 (SSRF guard, secret shown once).
+// No relation to Company on purpose (shared model left untouched; companies are never deleted).
+model WebhookEndpoint {
+  id                  String   @id @default(uuid(7))
+  companyId           String   @map("company_id")
+  url                 String
+  description         String?
+  secret              String // signing key; returned only on create / rotate (doc 26)
+  events              String[]
+  status              String   @default("active") // active | disabled
+  consecutiveFailures Int      @default(0) @map("consecutive_failures")
+  disabledReason      String?  @map("disabled_reason")
+  version             Int      @default(0)
+  createdBy           String   @map("created_by")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at")
+
+  deliveries WebhookDelivery[]
+
+  @@index([companyId, status])
+  @@map("webhook_endpoint")
+}
+
+// The outbox: written in the business transaction, only when an endpoint subscribes.
+model WebhookEvent {
+  id        String   @id @default(uuid(7))
+  companyId String   @map("company_id")
+  type      String
+  payload   Json // `data` of the body; the body is built from this row (webhooks.ts body())
+  createdAt DateTime @default(now()) @map("created_at")
+
+  deliveries WebhookDelivery[]
+
+  @@index([companyId, createdAt])
+  @@map("webhook_event")
+}
+
+// Delivery log + retry state, one row per (event, endpoint): idempotent per event id.
+model WebhookDelivery {
+  id             String    @id @default(uuid(7))
+  companyId      String    @map("company_id")
+  eventId        String    @map("event_id")
+  endpointId     String    @map("endpoint_id")
+  status         String    @default("pending") // pending | delivered | failed
+  attempts       Int       @default(0)
+  nextAttemptAt  DateTime  @default(now()) @map("next_attempt_at")
+  lastStatusCode Int?      @map("last_status_code")
+  lastError      String?   @map("last_error")
+  deliveredAt    DateTime? @map("delivered_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  event    WebhookEvent    @relation(fields: [eventId], references: [id])
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id])
+
+  @@unique([eventId, endpointId])
+  @@index([status, nextAttemptAt])
+  @@index([endpointId, createdAt])
+  @@map("webhook_delivery")
 }
 
 // ───────────── Part 11: landed-cost allocation (doc 15 §1.1) ─────────────

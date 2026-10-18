@@ -7,6 +7,7 @@ import { nextNumber } from "@/server/core/sequences";
 import { stateMachine } from "@/server/core/state";
 import { db, type Tx } from "@/server/db";
 import { Dec, dec, type DecValue } from "@/server/inventory/post";
+import { emit } from "@/server/webhooks/webhooks";
 
 // Doc 09 + doc 23. Lines are editable in draft only (PO-09); after approval the only
 // line edit is reducing qty (PO-03). Receipts drive ordered → partially/fully_received.
@@ -259,6 +260,9 @@ export async function approvePo(tx: Tx, ctx: Ctx, input: { id: string; version: 
   }
   await move(tx, po, input.version, "approved", { approvedBy: ctx.userId, approvedAt: new Date() });
   await tx.poApproval.create({ data: { poId: po.id, actorId: ctx.userId, decision: "approved", amount: po.total, comment: input.comment?.trim() || null } });
+  await emit(tx, ctx, "po.approved", {
+    purchaseOrderId: po.id, number: po.number, supplierId: po.supplierId, warehouseId: po.warehouseId, total: po.total, currency: po.currency, approvedBy: ctx.userId,
+  });
   return audited(tx, ctx, po, "approve");
 }
 

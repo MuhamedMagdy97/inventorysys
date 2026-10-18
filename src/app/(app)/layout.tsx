@@ -26,6 +26,7 @@ const NAV = [
   { href: "/imports", label: "Import / export", grant: ["imports.run", "reports.export"] },
   { href: "/admin/audit", label: "Audit log", grant: "audit.view" },
   { href: "/admin/settings", label: "Settings", grant: "settings.manage" },
+  { href: "/admin/webhooks", label: "Webhooks", grant: "webhooks.manage" },
 ] as const;
 
 export default async function AppLayout({ children }: LayoutProps<"/">) {
