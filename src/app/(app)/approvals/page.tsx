@@ -11,6 +11,7 @@ const TYPE: Record<string, string> = {
   purchase_order: "Purchase order", receipt_excess: "Over-delivery", transfer: "Transfer",
   transfer_variance: "Transfer loss", stock_adjustment: "Adjustment", adjustment_apply: "Ready to apply",
   purchase_return: "Return to supplier", sales_return: "Customer return",
+  landed_cost: "Landed cost",
 };
 
 // Doc 25 Approvals Inbox: oldest first, SLA age, approve / reject with comment.

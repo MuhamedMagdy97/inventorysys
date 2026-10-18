@@ -9,6 +9,7 @@ import { listBrands, listCategories, listUoms } from "@/server/catalog/taxonomy"
 import { listMovements, stockSummary } from "@/server/inventory/queries";
 import { fefoView, listSerials } from "@/server/inventory/tracking";
 import { listWarehouses } from "@/server/warehouses/warehouses";
+import { db } from "@/server/db";
 import { FefoTable } from "../../batches/fefo-table";
 import {
   addVariantAction, conversionAction, imageAction, productStatusAction, reorderAction, replaceSkuAction, updateProductAction, updateVariantAction,
@@ -53,10 +54,11 @@ export default async function ProductPage({ params, searchParams }: PageProps<"/
       tab === "serials" && can("inventory.view") && vSel ? listSerials(ctx, { variantId: vSel.id, page: 1, perPage: 50 }) : null,
     ]);
     const whCodes = Object.fromEntries((await listWarehouses(ctx).catch(() => [])).map((w) => [w.id, w.code]));
-    return { fefo, serials, p, vSel, categories, brands, uoms, warehouses, stock, movements, history, whCodes, canEdit: can("products.update"), canArchive: can("products.archive") };
+    const suppliers = warehouses.length ? await db.supplier.findMany({ where: { companyId: ctx.companyId, status: "active" }, orderBy: { name: "asc" }, select: { id: true, name: true } }) : [];
+    return { fefo, serials, p, vSel, categories, brands, uoms, warehouses, suppliers, stock, movements, history, whCodes, canEdit: can("products.update"), canArchive: can("products.archive") };
   });
   if ("denied" in res) return <Denied message={res.denied} />;
-  const { fefo, serials, p, vSel, categories, brands, uoms, warehouses, stock, movements, history, whCodes, canEdit, canArchive } = res.data;
+  const { fefo, serials, p, vSel, categories, brands, uoms, warehouses, suppliers, stock, movements, history, whCodes, canEdit, canArchive } = res.data;
   const archived = p.status === "archived";
   const editable = canEdit && !archived;
   const statusOptions = NEXT[p.status].filter((x) => x !== "archived" || canArchive);
@@ -231,13 +233,13 @@ export default async function ProductPage({ params, searchParams }: PageProps<"/
                     <h3 className="mb-2 text-sm font-medium">Reorder settings per warehouse</h3>
                     {v.warehouseSettings.length > 0 && (
                       <table className="table mb-2">
-                        <thead><tr><th>Warehouse</th><th>Reorder point</th><th>Reorder qty</th><th>Max</th>{stock && <th>Available</th>}</tr></thead>
+                        <thead><tr><th>Warehouse</th><th>Reorder point</th><th>Reorder qty</th><th>Max</th><th>Preferred supplier</th>{stock && <th>Available</th>}</tr></thead>
                         <tbody>
                           {v.warehouseSettings.map((ws) => {
                             const r = rows.find((x) => x.warehouseId === ws.warehouseId);
                             return (
                               <tr key={ws.warehouseId}>
-                                <td>{ws.warehouse.code}</td><td>{s(ws.reorderPoint) || "—"}</td><td>{s(ws.reorderQty) || "—"}</td><td>{s(ws.maxStock) || "—"}</td>
+                                <td>{ws.warehouse.code}</td><td>{s(ws.reorderPoint) || "—"}</td><td>{s(ws.reorderQty) || "—"}</td><td>{s(ws.maxStock) || "—"}</td><td>{ws.preferredSupplier?.name ?? "—"}</td>
                                 {stock && <td>{r?.available ?? 0}{r?.belowReorder && <span className="ml-2 text-xs text-amber-700">reorder</span>}</td>}
                               </tr>
                             );
@@ -254,6 +256,13 @@ export default async function ProductPage({ params, searchParams }: PageProps<"/
                         <label className="label">Reorder point<input name="reorderPoint" type="number" min={0} step="any" className="input w-28" /></label>
                         <label className="label">Reorder qty<input name="reorderQty" type="number" min={0} step="any" className="input w-28" /></label>
                         <label className="label">Max stock<input name="maxStock" type="number" min={0} step="any" className="input w-28" /></label>
+                        <label className="label">
+                          Preferred supplier
+                          <select name="preferredSupplierId" className="input">
+                            <option value="">—</option>
+                            {suppliers.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                          </select>
+                        </label>
                       </ActionForm>
                     )}
                   </div>

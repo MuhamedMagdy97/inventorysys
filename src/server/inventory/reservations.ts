@@ -5,6 +5,7 @@ import { requirePermission, type Ctx } from "@/server/core/ctx";
 import { AppError } from "@/server/core/errors";
 import type { Tx } from "@/server/db";
 import { readSettings } from "@/server/settings/settings";
+import { hasStockHooks } from "@/server/webhooks/webhooks";
 import { checkRefs, dec, lockPositions, pickBins, postMovements, type Dec, type DecValue, type Leg } from "./post";
 import { perBin, takeSerials } from "./serials";
 
@@ -67,6 +68,7 @@ export async function reserve(tx: Tx, ctx: Ctx, input: ReserveInput) {
   // same-SKU queue moves faster (refs + warehouse share lock, as postMovements would).
   const order = input.externalOrderId ? await orderRef(tx, ctx, channel ?? "pos", input.externalOrderId) : null;
   await checkRefs(tx, ctx, candidates.map((b) => ({ variantId: variant.id, warehouseId: warehouse.id, binId: null, batchId: b })));
+  const stockHooks = await hasStockHooks(tx, ctx.companyId); // Part 11 webhooks: also outside the lock
   // The header for the full qty, still outside the lock (uncommitted, so nobody sees it); a partial
   // reserve corrects qty below, a refused one rolls it back with the transaction.
   let header = await tx.reservation.create({
@@ -116,7 +118,7 @@ export async function reserve(tx: Tx, ctx: Ctx, input: ReserveInput) {
     }),
   };
   const posted = await postMovements(tx, ctx, {
-    sourceType: "reservation", sourceId: reservation.id, action: "reserve", prelocked: pos, auditAfter: { reservation },
+    sourceType: "reservation", sourceId: reservation.id, action: "reserve", prelocked: pos, auditAfter: { reservation }, stockHooks,
     legs: reservation.lines.map((l, i) => ({
       type: "reservation", variantId: variant.id, warehouseId: warehouse.id, batchId: l.batchId,
       delta: { reserved: l.qty }, line: i + 1, reasonCode: "reserve",

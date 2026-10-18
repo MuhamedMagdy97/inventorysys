@@ -2,6 +2,7 @@ import { writeAudit } from "@/server/core/audit";
 import type { Ctx } from "@/server/core/ctx";
 import { db, transaction } from "@/server/db";
 import { notify } from "@/server/notifications/notify";
+import { emit } from "@/server/webhooks/webhooks";
 import { dec, lockPositions, postMovements, type Leg } from "./post";
 import { reconcile } from "./reconcile";
 import { expireBatchLines, expireReservation, utcToday } from "./reservations";
@@ -52,6 +53,8 @@ export async function expireDueReservations(opts: RunOpts = {}) {
         warehouseId: res.reservation.warehouseId, message: `Reservation expired; ${res.reservation.qtyReleased.toString()} released`,
         link: `/sales-orders?reservation=${r.id}`,
       });
+      const v = res.reservation;
+      await emit(tx, ctx, "reservation.expired", { reservationId: v.id, variantId: v.variantId, warehouseId: v.warehouseId, salesOrderRefId: v.salesOrderRefId, qtyReleased: v.qtyReleased });
       return true;
     });
   });

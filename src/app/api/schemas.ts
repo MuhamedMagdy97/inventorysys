@@ -178,3 +178,16 @@ export const ReserveBody = z.object({
   channel: z.enum(["pos", "web", "marketplace", "api"]).optional(), // staff only; API keys act as their own channel (SO-06)
   serials: z.array(z.string().max(100)).max(10000).optional(), // POS sale of serialized items (S-02)
 });
+
+// ───────────── Part 11: landed cost (doc 15 §1.1) ─────────────
+export const LandedCostCreate = z.object({
+  method: z.enum(["value", "qty"]).optional(),
+  charges: z.array(z.object({ kind: z.enum(["shipping", "duty", "tax", "other"]), amount: zDec })).min(1).max(20),
+  note: text(2000).nullable().optional(),
+});
+export const LandedCostDecision = z.object({ ...zVersion, comment: text(2000).nullable().optional() });
+
+// Part 11 reorder engine (doc 09 §6, RO-05).
+export const ReorderCreate = z.object({
+  lines: z.array(z.object({ variantId: zId, warehouseId: zId, supplierId: zId, qty: zQty4 })).min(1).max(500),
+});

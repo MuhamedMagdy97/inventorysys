@@ -12,6 +12,7 @@ const NAV = [
   { href: "/products", label: "Products", grant: "products.view" },
   { href: "/suppliers", label: "Suppliers", grant: "suppliers.view" },
   { href: "/purchase-orders", label: "Purchasing", grant: ["purchases.view", "inventory.receive"] },
+  { href: "/reorder", label: "Reorder", grant: "purchases.create" },
   { href: "/sales-orders", label: "Sales", grant: "sales.view" },
   { href: "/transfers", label: "Transfers", grant: "inventory.view" },
   { href: "/adjustments", label: "Adjustments", grant: "inventory.view" },
@@ -27,6 +28,7 @@ const NAV = [
   { href: "/imports", label: "Import / export", grant: ["imports.run", "reports.export"] },
   { href: "/admin/audit", label: "Audit log", grant: "audit.view" },
   { href: "/admin/settings", label: "Settings", grant: "settings.manage" },
+  { href: "/admin/webhooks", label: "Webhooks", grant: "webhooks.manage" },
 ] as const;
 
 export default async function AppLayout({ children }: LayoutProps<"/">) {

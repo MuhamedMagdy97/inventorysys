@@ -406,16 +406,21 @@ export async function uomFactor(tx: Tx | typeof db, productId: string, uom: stri
 export async function setVariantWarehouseSettings(
   tx: Tx,
   ctx: Ctx,
-  input: { variantId: string; warehouseId: string; reorderPoint?: Money; reorderQty?: Money; maxStock?: Money },
+  input: { variantId: string; warehouseId: string; reorderPoint?: Money; reorderQty?: Money; maxStock?: Money; preferredSupplierId?: string | null },
 ) {
   await requirePermission(ctx, "products.update", { warehouseId: input.warehouseId });
   const variant = await tx.productVariant.findFirst({ where: { id: input.variantId, companyId: ctx.companyId } });
   const warehouse = await tx.warehouse.findFirst({ where: { id: input.warehouseId, companyId: ctx.companyId } });
   if (!variant || !warehouse) throw new AppError("not_found", "Variant or warehouse not found");
+  // RO-01: undefined keeps the current preferred supplier, null clears it.
+  if (input.preferredSupplierId && !(await tx.supplier.count({ where: { id: input.preferredSupplierId, companyId: ctx.companyId, status: "active" } }))) {
+    throw new AppError("validation_error", "Unknown or inactive supplier", { field: "preferredSupplierId" });
+  }
   const data = {
     reorderPoint: money(input.reorderPoint, "reorderPoint") ?? null,
     reorderQty: money(input.reorderQty, "reorderQty") ?? null,
     maxStock: money(input.maxStock, "maxStock") ?? null,
+    preferredSupplierId: input.preferredSupplierId,
   };
   if (data.reorderQty?.isZero()) throw new AppError("validation_error", "Reorder qty must be > 0 if set", { field: "reorderQty" });
   const key = { variantId_warehouseId: { variantId: variant.id, warehouseId: warehouse.id } };
@@ -488,7 +493,7 @@ export async function getProduct(ctx: Ctx, id: string) {
           barcodeAliases: { where: { expiresAt: { gt: new Date() } } },
           warehouseSettings: {
             where: { warehouse: { id: ctx.warehouseIds === "all" ? undefined : { in: ctx.warehouseIds } } },
-            include: { warehouse: { select: { code: true } } },
+            include: { warehouse: { select: { code: true } }, preferredSupplier: { select: { name: true } } },
           },
           supplierProducts: { include: { supplier: { select: { id: true, code: true, name: true, currency: true, status: true } } } },
           batches: { orderBy: [{ expiryDate: "asc" }, { batchNo: "asc" }], select: { id: true, batchNo: true, expiryDate: true } },
