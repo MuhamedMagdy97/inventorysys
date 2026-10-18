@@ -23,7 +23,7 @@ Putaway is recorded as TWO legs (`putaway_out` −bin A, `putaway_in` +bin B, sa
 | transfer_in | Warehouse move, receive leg (dest) | +on_hand (or +damaged for damaged-in-transit); derived in-transit falls via `transfer_line.qty_received/qty_damaged` | via reverse transfer | never |
 | transfer_variance | Approved in-transit loss (missing units) | no bucket change (units already left source on ship); closes derived in-transit via `transfer_line.qty_missing`; relieves value at the ship snapshot | no (terminal loss) | never |
 | adjustment_in / adjustment_out | Corrections, found/loss, count variance | ±on_hand | via counter-adjustment | never |
-| cost_correction | Approved unit-cost correction (e.g., invoice ≠ PO price) | qty 0; carries corrected `unit_cost_snapshot`, WAC moves prospectively | via counter cost_correction | never |
+| cost_correction | Approved unit-cost correction (e.g., invoice ≠ PO price) | qty 0, no bin; `value_delta` = the correction, `unit_cost_snapshot` = WAC after; WAC moves prospectively (landed cost: doc 15 §1.1) | via counter cost_correction | never |
 | damage | Mark damaged (approved) | on_hand→damaged | via repair_to_stock | never |
 | repair_to_stock | Inspected repair back to sellable (approved) | damaged→on_hand | via damage (re-mark) | never |
 | expiry | Auto-block by expiry job | on_hand→expired | no | never |

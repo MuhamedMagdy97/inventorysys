@@ -4,9 +4,10 @@ import { ActionForm } from "@/app/ui/action-form";
 import { Denied } from "@/app/ui/denied";
 import { pageData } from "@/server/auth/page-ctx";
 import { db } from "@/server/db";
+import { CHARGE_KINDS, listLandedCosts } from "@/server/purchasing/landed-cost";
 import { getPo } from "@/server/purchasing/purchase-orders";
 import {
-  cancelPoAction, closePoAction, excessAction, poMoveAction, reduceLineAction, rejectPoAction, reverseReceiptAction, updatePoAction,
+  cancelPoAction, closePoAction, createLandedCostAction, decideLandedCostAction, excessAction, poMoveAction, reduceLineAction, rejectPoAction, reverseReceiptAction, updatePoAction,
 } from "../actions";
 import { LineRows } from "../line-rows";
 
@@ -21,10 +22,11 @@ export default async function PoPage({ params }: PageProps<"/purchase-orders/[id
     const suppliers = po.status === "draft" && ctx.permissions.has("purchases.update")
       ? await db.supplier.findMany({ where: { companyId: ctx.companyId, status: "active" }, orderBy: { name: "asc" }, select: { id: true, name: true } })
       : [];
-    return { po, suppliers };
+    const landed = ["purchases.view", "inventory.view"].some((p) => ctx.permissions.has(p)) ? await listLandedCosts(ctx, { poId: po.id }) : [];
+    return { po, suppliers, landed };
   });
   if ("denied" in res) return <Denied message={res.denied} />;
-  const { po, suppliers } = res.data;
+  const { po, suppliers, landed } = res.data;
   const can = (p: string) => res.ctx.permissions.has(p);
   const lines = po.lines.filter((l) => !l.removed);
   const hasReceipts = po.receipts.length > 0;
@@ -173,6 +175,48 @@ export default async function PoPage({ params }: PageProps<"/purchase-orders/[id
             <ActionForm action={reverseReceiptAction.bind(null, r.id)} submit="Reverse receipt" className="flex items-end gap-2">
               <label className="label">Reason<input name="reason" required className="input" /></label>
             </ActionForm>
+          )}
+          {landed.filter((lc) => lc.receiptId === r.id).map((lc) => (
+            <div key={lc.id} className="flex flex-col gap-2 border-t pt-3 text-sm">
+              <p>
+                <strong>{lc.number}</strong> · landed cost by {lc.method} · {lc.status}
+                {" · "}{(lc.charges as { kind: string; amount: string }[]).map((c) => `${c.kind} ${n(c.amount)}`).join(", ")} = <strong>{lc.total.toFixed(2)} {po.currency}</strong>
+                {lc.capitalized && ` · into stock ${lc.capitalized.toFixed(2)}, expensed ${lc.expensed?.toFixed(2)}`}
+                {lc.note && ` · ${lc.note}`}
+              </p>
+              <table className="table">
+                <thead><tr><th>Receipt line</th><th className="text-right">Basis qty</th><th className="text-right">Basis value</th><th className="text-right">Allocated</th><th className="text-right">Into stock</th><th className="text-right">Expensed</th></tr></thead>
+                <tbody>
+                  {lc.lines.map((l) => (
+                    <tr key={l.id}>
+                      <td>{l.receiptLine.lineNo}</td>
+                      <td className="text-right tabular-nums">{n(l.basisQty)}</td>
+                      <td className="text-right tabular-nums">{l.basisValue.toFixed(2)}</td>
+                      <td className="text-right tabular-nums">{n(l.allocated)}</td>
+                      <td className="text-right tabular-nums">{l.capitalized ? n(l.capitalized) : "—"}</td>
+                      <td className="text-right tabular-nums">{l.expensed ? n(l.expensed) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {lc.status === "submitted" && can("inventory.adjust_approve") && lc.createdBy !== res.ctx.userId && (
+                <ActionForm action={decideLandedCostAction.bind(null, lc.id, crypto.randomUUID())} submit="Send" className="flex items-end gap-2">
+                  <input type="hidden" name="version" value={lc.version} />
+                  <select name="decision" aria-label="Decision" className="input"><option value="approve">Approve and post into WAC</option><option value="reject">Reject</option></select>
+                  <label className="label">Comment (required to reject)<input name="comment" className="input" /></label>
+                </ActionForm>
+              )}
+            </div>
+          ))}
+          {!r.reversalOfReceiptId && !reversed.has(r.id) && can("inventory.adjust_create") && (
+            <details className="border-t pt-3 text-sm">
+              <summary className="cursor-pointer">Add landed cost</summary>
+              <ActionForm action={createLandedCostAction.bind(null, r.id, crypto.randomUUID())} submit="Send for approval" className="mt-2 flex flex-wrap items-end gap-2">
+                {CHARGE_KINDS.map((k) => <label key={k} className="label capitalize">{k}<input name={`charge.${k}`} inputMode="decimal" className="input w-28" /></label>)}
+                <label className="label">Allocate by<select name="method" className="input"><option value="value">Value</option><option value="qty">Quantity</option></select></label>
+                <label className="label">Note<input name="note" className="input" /></label>
+              </ActionForm>
+            </details>
           )}
         </section>
       ))}
