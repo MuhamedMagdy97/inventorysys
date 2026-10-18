@@ -145,6 +145,7 @@ export default async function PoPage({ params }: PageProps<"/purchase-orders/[id
         <section key={r.id} className="card flex flex-col gap-3">
           <h2 className="font-semibold">
             {r.number} {r.reversalOfReceiptId && <span className="text-muted">(reversal)</span>}{reversed.has(r.id) && <span className="text-muted"> (reversed)</span>}
+            {!r.reversalOfReceiptId && !reversed.has(r.id) && <Link href={`/labels?kind=receipt&ids=${r.id}`} className="link ml-3 text-sm font-normal">Print labels</Link>}
           </h2>
           <p className="text-sm text-muted">{r.receivedAt.toISOString().slice(0, 16).replace("T", " ")} · {r.receiver.name}{r.supplierRef && ` · ref ${r.supplierRef}`}{r.note && ` · ${r.note}`}</p>
           <table className="table">

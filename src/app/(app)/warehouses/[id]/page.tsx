@@ -78,11 +78,14 @@ export default async function WarehousePage({ params }: PageProps<"/warehouses/[
       )}
 
       <section className="card">
-        <h2 className="mb-3 font-semibold">Bins</h2>
+        <h2 className="mb-3 font-semibold">Bins{w.bins.some((b) => !b.archived) && <Link href={`/labels?kind=bin&warehouse=${w.id}`} className="link ml-3 text-sm font-normal">Print all bin labels</Link>}</h2>
         <div className="flex flex-col gap-4">
           {[...groups.entries()].map(([loc, bins]) => (
             <div key={loc}>
-              <h3 className="mb-1 text-sm font-medium text-muted">{loc}</h3>
+              <h3 className="mb-1 text-sm font-medium text-muted">
+                {loc}
+                {bins.some((b) => !b.archived) && <Link href={`/labels?kind=bin&ids=${bins.filter((b) => !b.archived).slice(0, 200).map((b) => b.id).join(",")}`} className="link ml-3 font-normal">Print labels</Link>}
+              </h3>
               <div className="overflow-x-auto">
                 <table className="table">
                   <thead>

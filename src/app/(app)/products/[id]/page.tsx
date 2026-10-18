@@ -186,6 +186,10 @@ export default async function ProductPage({ params, searchParams }: PageProps<"/
                   <h2 className="font-mono font-semibold">{v.sku}</h2>
                   <span className="text-sm text-muted">{v.status}{v.barcode && ` · barcode ${v.barcode}`}</span>
                 </div>
+                <p className="flex gap-3 text-sm">
+                  <Link href={`/labels?kind=variant&ids=${v.id}`} className="link">Print labels</Link>
+                  {v.batches.length > 0 && <Link href={`/labels?kind=batch&ids=${v.batches.slice(0, 200).map((b) => b.id).join(",")}`} className="link">Print batch labels</Link>}
+                </p>
                 {checkBarcode(v.barcode).warning && <p role="status" className="text-sm text-amber-700">{checkBarcode(v.barcode).warning}</p>}
                 {(v.skuAliases.length > 0 || v.barcodeAliases.length > 0) && (
                   <p className="text-sm text-muted">

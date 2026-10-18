@@ -214,7 +214,7 @@ export async function setWarehouseStaff(tx: Tx, ctx: Ctx, input: { warehouseId: 
 // ───────────── Reads ─────────────
 
 // Master-data admins see every warehouse; everyone else their scope (doc 02 §3).
-const visible = (ctx: Ctx) =>
+export const visible = (ctx: Ctx) =>
   ctx.warehouseIds === "all" || ["warehouses.create", "warehouses.update", "warehouses.archive"].some((p) => ctx.permissions.has(p))
     ? {}
     : { id: { in: ctx.warehouseIds } };
