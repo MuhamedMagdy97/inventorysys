@@ -7,6 +7,7 @@ import { nextNumber } from "@/server/core/sequences";
 import { stateMachine } from "@/server/core/state";
 import { db, type Tx } from "@/server/db";
 import { notify } from "@/server/notifications/notify";
+import { emit } from "@/server/webhooks/webhooks";
 import { Dec, dec, lockPositions, pickBins, postMovements, type DecValue, type Leg } from "./post";
 import { utcToday } from "./reservations";
 import { perBin, takeSerials } from "./serials";
@@ -335,6 +336,10 @@ export async function receiveTransfer(
   }
   const status = await statusOf(tx, t.id);
   await move(tx, t, input.version, status, status === "partially_received" ? {} : { closedAt: new Date() });
+  await emit(tx, ctx, "transfer.received", {
+    transferId: t.id, number: t.number, fromWarehouseId: t.fromWarehouseId, toWarehouseId: t.toWarehouseId, status,
+    lines: updates.map((u) => ({ variantId: u.l.variantId, sku: u.l.variant.sku, received: u.rcv, damaged: u.dmg, missing: u.miss })),
+  });
   if (updates.some((u) => u.miss.gt(0))) {
     await notify(tx, ctx, { type: "transfer.variance_reported", entityType: "transfer", entityId: t.id, warehouseId: t.toWarehouseId, message: `${t.number}: missing units reported, approval needed`, link: `/transfers/${t.id}` });
   }

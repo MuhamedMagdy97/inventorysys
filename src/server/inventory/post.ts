@@ -3,6 +3,7 @@ import { writeAudit } from "@/server/core/audit";
 import type { Ctx } from "@/server/core/ctx";
 import { AppError } from "@/server/core/errors";
 import type { Tx } from "@/server/db";
+import { emitStockLevels } from "@/server/webhooks/webhooks";
 
 // THE ledger writer (doc 07/08). Every stock change in the system goes through
 // postMovements(): lock → validate invariants → update balances → append
@@ -18,7 +19,7 @@ const ZERO = dec(0);
 export type Bucket = "onHand" | "blocked" | "damaged" | "expired" | "reserved";
 const PHYSICAL = ["onHand", "blocked", "damaged", "expired"] as const;
 
-type Kind = "in" | "out" | "internal" | "reserve" | "variance";
+type Kind = "in" | "out" | "internal" | "reserve" | "variance" | "cost";
 // Allowed sign per bucket (doc 08 §3). in/out change valued stock; internal moves
 // between buckets/bins at unchanged value; reserve touches only qty_reserved; variance
 // (transfer_variance) moves no bucket and books an in-transit loss (doc 11 §5).
@@ -46,7 +47,8 @@ const SHAPES: Partial<Record<MovementType, { kind: Kind; signs: Partial<Record<B
   reservation: { kind: "reserve", signs: { reserved: 1 } },
   reservation_release: { kind: "reserve", signs: { reserved: -1 } },
   transfer_variance: { kind: "variance", signs: {} },
-  // ponytail: cost_correction needs cost-layer rules first; rejected until then.
+  // qty 0, no bin: moves only the value of (variant, warehouse) — landed cost (doc 15 §1.1).
+  cost_correction: { kind: "cost", signs: {} },
 };
 
 // Inbound types whose unit cost defaults to the current WAC when not given.
@@ -77,8 +79,12 @@ export type PostInput = {
   sourceType: string; sourceId: string; legs: Leg[]; action?: string; postedAt?: Date;
   // T10.2 hot path (reserve): the caller already ran checkRefs() on these legs and
   // lockPositions() on their positions in this transaction, and has posted nothing since,
-  // so they aren't re-validated / re-locked while the position lock is held. Reservation legs only.
+  // so they aren't re-validated / re-locked while the position lock is held. Reservation legs only,
+  // and the source must be created in this transaction: its legs can't exist yet, so the MV-02
+  // read is skipped too (the unique leg key in the DB still rejects a duplicate).
   prelocked?: Map<string, PosState>;
+  auditAfter?: Record<string, unknown>; // merged into the posting's audit row (reserve: one row, not two)
+  stockHooks?: boolean; // hasStockHooks() precomputed before the locks (reserve); omitted → emitStockLevels checks
 };
 
 export type PostResult = {
@@ -117,11 +123,12 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
   const pos = pre ?? (await lockPositions(tx, ctx, positions));
   const physical = legs.filter((l) => l.binId);
   const bins = await lockBins(tx, ctx, uniq(physical.map((l) => [l.variantId, l.warehouseId, l.binId!, l.batchId] as const), (b) => binKey(...b)));
-  const costs = await lockCosts(tx, ctx, uniq(physical.map((l) => [l.variantId, l.warehouseId] as const), (c) => costKey(...c)));
+  const valued = [...physical, ...legs.filter((l) => SHAPES[l.type]!.kind === "cost")];
+  const costs = await lockCosts(tx, ctx, uniq(valued.map((l) => [l.variantId, l.warehouseId] as const), (c) => costKey(...c)));
 
   // 2. Leg-level idempotency (MV-02), checked under the locks so a racing
   //    double-post sees the winner's committed legs.
-  const existing = await tx.inventoryMovement.findMany({
+  const existing = pre ? [] : await tx.inventoryMovement.findMany({
     where: { companyId: ctx.companyId, idempotencyKey: { in: legs.map((l) => l.key) } },
     orderBy: { id: "asc" },
   });
@@ -143,7 +150,7 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
     const shape = SHAPES[l.type]!;
     const p = pos.get(posKey(l.variantId, l.warehouseId, l.batchId))!;
     const b = l.binId ? bins.get(binKey(l.variantId, l.warehouseId, l.binId, l.batchId))! : null;
-    const c = l.binId ? costs.get(costKey(l.variantId, l.warehouseId))! : null;
+    const c = l.binId || shape.kind === "cost" ? costs.get(costKey(l.variantId, l.warehouseId))! : null;
 
     if (b) {
       for (const k of PHYSICAL) {
@@ -169,7 +176,14 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
     if (c) {
       const qty = PHYSICAL.reduce((s, k) => s.plus(l.d[k]), ZERO);
       const wac = c.qty.isZero() ? ZERO : c.value.div(c.qty).toDecimalPlaces(4);
-      if (l.reversesMovementId && shape.kind !== "internal") {
+      if (shape.kind === "cost") {
+        // Prospective WAC change (doc 15 §1.1): the value needs units to sit on and never goes below 0.
+        valueDelta = dec(l.value);
+        if (c.qty.isZero() || c.value.plus(valueDelta).lt(0)) {
+          throw new AppError("validation_error", "A cost correction needs stock on hand and keeps value ≥ 0", { variantId: l.variantId, warehouseId: l.warehouseId });
+        }
+        unitCost = c.value.plus(valueDelta).div(c.qty).toDecimalPlaces(4);
+      } else if (l.reversesMovementId && shape.kind !== "internal") {
         // RC-08: undo at the original cost; value never below 0, last units out take the rest.
         unitCost = dec(l.unitCost!);
         valueDelta = c.qty.plus(qty).isZero() ? c.value.neg() : Dec.max(qty.times(unitCost).toDecimalPlaces(4), c.value.neg());
@@ -264,11 +278,14 @@ export async function postMovements(tx: Tx, ctx: Ctx, input: PostInput): Promise
     entityId: input.sourceId,
     warehouseId: legs[0].warehouseId,
     after: {
+      ...input.auditAfter,
       movementIds: movements.map((m) => m.id),
       balances: [...bins.values()].filter((b) => b.touched).map((b) => ({ ...b, touched: undefined })),
       allocations: [...pos.values()].filter((p) => p.touched).map((p) => ({ id: p.id, qtyReserved: p.reserved })),
     },
   });
+  // Part 11 (doc 24): stock.low / stock.out webhooks when available crosses a threshold.
+  await emitStockLevels(tx, ctx, legs.map((l) => ({ variantId: l.variantId, warehouseId: l.warehouseId, delta: l.d.onHand.minus(l.d.reserved) })), { sourceType: input.sourceType, sourceId: input.sourceId }, input.stockHooks);
   return { movements, auditId: audit.id, replayed: false };
 }
 
@@ -348,6 +365,12 @@ function normalize(ctx: Ctx, input: PostInput, l: Leg): Norm {
   }
   if (shape.kind === "variance") {
     if (l.binId || l.value == null || dec(l.value).lt(0)) throw new AppError("validation_error", "transfer_variance carries a value ≥ 0 and no bin");
+    return { ...l, d, binId: null, batchId: l.batchId ?? null, key: legKey(input.sourceType, input.sourceId, l) };
+  }
+  if (shape.kind === "cost") {
+    if (l.binId || l.value == null || l.reversesMovementId) {
+      throw new AppError("validation_error", "cost_correction carries a value, no quantity, no bin, and is never reversed");
+    }
     return { ...l, d, binId: null, batchId: l.batchId ?? null, key: legKey(input.sourceType, input.sourceId, l) };
   }
   if (Object.values(d).every((x) => x.isZero())) throw new AppError("validation_error", "Zero-quantity leg");

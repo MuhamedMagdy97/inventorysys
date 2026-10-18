@@ -36,4 +36,4 @@ Record arrival truth. Posting a receipt IMMEDIATELY updates balances + ledger + 
 - RC-11 Serials: `serials` lists one serial per accepted + excess unit (status `in_stock`, or `quarantine` for excess/inspection); `damaged_serials` one per damaged + expired unit (status `damaged`). Counts must match exactly or the whole receipt is rejected (edge #19). A reversed receipt sets its serials to `reversed`, which frees the serial number.
 - RC-12 Inspection (RC-05) posts accepted units to `blocked`; the inspection decision (`blocked_release`/`blocked_reject`) ships with the inspection screen in Part 7.
 - RC-13 Short/missing qty and wrong-product lines that are not physically held are recorded on the receipt for the supplier claim with no movement. Wrong-product units held post `blocked_in` at the current WAC (no WAC dilution).
-- Deferred: invoice-price variance + `cost_correction` (later Part); landed cost (V1.5).
+- Deferred: invoice-price variance + `cost_correction` (later Part); landed cost → V1.5 landed-cost documents per receipt (doc 15 §1.1).

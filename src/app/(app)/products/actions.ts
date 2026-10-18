@@ -63,6 +63,7 @@ export async function reorderAction(variantId: string, _: ActionState, f: FormDa
   return runAction("variants.reorder", (tx, ctx) => setVariantWarehouseSettings(tx, ctx, {
     variantId, warehouseId: str(f, "warehouseId") ?? "",
     reorderPoint: clearable(f, "reorderPoint"), reorderQty: clearable(f, "reorderQty"), maxStock: clearable(f, "maxStock"),
+    preferredSupplierId: clearable(f, "preferredSupplierId"),
   }));
 }
 

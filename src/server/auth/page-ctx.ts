@@ -28,7 +28,7 @@ export type ActionState = { ok?: string; error?: string; at?: number } | null;
 export async function runAction<T>(
   scope: string,
   fn: (tx: Tx, ctx: Ctx) => Promise<T>,
-  ok = "Saved",
+  ok: string | ((result: T) => string) = "Saved", // a function: e.g. show a one-time secret
   redirectTo?: (result: T) => string, // e.g. to the record just created
   idempotencyKey?: string, // stock postings: a key rendered into the form, so a double submit replays
 ): Promise<ActionState> {
@@ -43,7 +43,7 @@ export async function runAction<T>(
   }
   if (redirectTo) redirect(redirectTo(result));
   refresh();
-  return { ok, at: Date.now() };
+  return { ok: typeof ok === "function" ? ok(result) : ok, at: Date.now() };
 }
 
 // Page data loader: domain `forbidden` → a 403 message the page renders; `not_found` → 404.

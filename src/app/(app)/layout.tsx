@@ -12,10 +12,13 @@ const NAV = [
   { href: "/products", label: "Products", grant: "products.view" },
   { href: "/suppliers", label: "Suppliers", grant: "suppliers.view" },
   { href: "/purchase-orders", label: "Purchasing", grant: ["purchases.view", "inventory.receive"] },
+  { href: "/reorder", label: "Reorder", grant: "purchases.create" },
   { href: "/sales-orders", label: "Sales", grant: "sales.view" },
   { href: "/transfers", label: "Transfers", grant: "inventory.view" },
   { href: "/adjustments", label: "Adjustments", grant: "inventory.view" },
   { href: "/counts", label: "Counts", grant: "inventory.view" },
+  { href: "/batches", label: "Batches", grant: "inventory.view" },
+  { href: "/serials", label: "Serials", grant: "inventory.view" },
   { href: "/returns", label: "Returns", grant: ["purchases.view", "purchases.return_ship", "sales.view"] },
   { href: "/inspection", label: "Inspection", grant: ["inventory.inspect", "sales.return_inspect"] },
   { href: "/approvals", label: "Approvals", grant: ["purchases.approve", "inventory.transfer_approve", "inventory.adjust_approve", "inventory.adjust_apply", "inventory.damage_approve", "inventory.repair_approve", "inventory.dispose_approve", "purchases.return_approve", "sales.return_approve", "inventory.count_approve", "inventory.count_apply"] },
@@ -25,6 +28,7 @@ const NAV = [
   { href: "/imports", label: "Import / export", grant: ["imports.run", "reports.export"] },
   { href: "/admin/audit", label: "Audit log", grant: "audit.view" },
   { href: "/admin/settings", label: "Settings", grant: "settings.manage" },
+  { href: "/admin/webhooks", label: "Webhooks", grant: "webhooks.manage" },
 ] as const;
 
 export default async function AppLayout({ children }: LayoutProps<"/">) {

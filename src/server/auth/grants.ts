@@ -13,6 +13,7 @@ export const PERMISSIONS = [
   ...expand("reports", "view/export"),
   ...expand("users", "view/manage"), "roles.manage", "audit.view", "settings.manage", "imports.run", "sequences.view",
   "system.migration_run",
+  "webhooks.manage", // Part 11 T11.4 (doc 24)
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -46,6 +47,7 @@ export const ROLE_SEEDS: Record<string, RoleSeed> = {
     grants: [
       ...all("users"), "roles.manage", "audit.view", "settings.manage", "imports.run", "sequences.view",
       ...all("products"), "categories.manage", "brands.manage", "uom.manage", ...all("suppliers"), ...all("warehouses"), "locations.manage",
+      "webhooks.manage",
     ],
   },
   inventory_manager: {

@@ -8,6 +8,7 @@ import { lookupCodes } from "@/server/catalog/catalog";
 import { scopeFilter } from "@/server/core/ctx";
 import { db } from "@/server/db";
 import { getAvailability } from "@/server/inventory/availability";
+import { fefoOrder, utcToday } from "@/server/inventory/reservations";
 import { listReservations, orderStatus } from "@/server/sales/orders";
 import { cancelOrderAction, reservationAction, reserveAction } from "./actions";
 
@@ -16,6 +17,14 @@ export const metadata: Metadata = { title: "Sales orders" };
 const STATUSES: ReservationStatus[] = ["active", "partially_fulfilled", "fulfilled", "cancelled", "expired"];
 const n = (d: { toString(): string }) => Number(d.toString()).toLocaleString(undefined, { maximumFractionDigits: 4 });
 const one = (v: string | string[] | undefined) => (typeof v === "string" && v ? v : undefined);
+// T11.5: the order Ship takes the pinned batches (fulfil's FEFO); expired lines can't ship (B-04).
+function pickOrder(lines: { id: string; qty: { toString(): string }; qtyFulfilled: { toString(): string }; qtyReleased: { toString(): string }; batch: { batchNo: string; expiryDate: Date | null } | null }[]) {
+  const today = utcToday();
+  return lines.flatMap((l) => (l.batch ? [{ ...l, batch: l.batch }] : []))
+    .map((l) => ({ ...l, open: Number(l.qty.toString()) - Number(l.qtyFulfilled.toString()) - Number(l.qtyReleased.toString()) }))
+    .filter((l) => l.open > 0).sort((a, b) => fefoOrder(a.batch, b.batch))
+    .map((l) => ({ id: l.id, text: `${l.batch.batchNo}×${n(l.open)}`, expired: !!l.batch.expiryDate && l.batch.expiryDate <= today, expiry: l.batch.expiryDate }));
+}
 
 // Doc 25 "Sales Orders (refs)": reservations with fulfil/cancel/extend, ATP inline.
 export default async function SalesOrdersPage({ searchParams }: PageProps<"/sales-orders">) {
@@ -134,6 +143,7 @@ export default async function SalesOrdersPage({ searchParams }: PageProps<"/sale
             {list.items.length === 0 && <tr><td colSpan={10} className="text-muted">No reservations.</td></tr>}
             {list.items.map((r) => {
               const open = r.status === "active" || r.status === "partially_fulfilled";
+              const pick = open ? pickOrder(r.lines) : [];
               const v = <input type="hidden" name="version" value={r.version} />;
               return (
                 <tr key={r.id}>
@@ -154,6 +164,13 @@ export default async function SalesOrdersPage({ searchParams }: PageProps<"/sale
                             {v}<input name="qty" type="number" min="0.0001" step="any" placeholder="all" aria-label="Quantity to ship" className="input w-20" />
                             <input name="serials" placeholder="serials" aria-label="Serial numbers shipped" className="input w-28" />
                           </ActionForm>
+                        )}
+                        {can("sales.fulfil") && pick.length > 0 && (
+                          <p className="text-xs text-muted">Pick: {pick.map((p, i) => (
+                            <span key={p.id} className={p.expired ? "text-red-600" : undefined} title={p.expiry ? `expires ${p.expiry.toISOString().slice(0, 10)}` : "no expiry"}>
+                              {i > 0 && " → "}{p.text}{p.expired && " (expired, not shippable)"}
+                            </span>
+                          ))}</p>
                         )}
                         {can("sales.cancel") && <ActionForm action={reservationAction.bind(null, r.id, "cancel")} submit="Cancel" className="flex gap-1">{v}</ActionForm>}
                         {can("sales.reserve") && !r.extendedAt && <ActionForm action={reservationAction.bind(null, r.id, "extend")} submit="Extend" className="flex gap-1">{v}</ActionForm>}

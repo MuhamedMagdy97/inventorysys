@@ -2,6 +2,7 @@ import { PgBoss } from "pg-boss";
 import { validateEnv } from "@/server/env";
 import { expireDueReservations, runReconciler, sweepExpiredBatches } from "@/server/inventory/jobs";
 import { escalateApprovals, sendDigests, sendInstantEmails, stockAlerts } from "@/server/notifications/jobs";
+import { deliverWebhooks } from "@/server/webhooks/webhooks";
 
 // Background worker (tech stack: pg-boss, no Redis). `npm run worker`. Jobs are re-runnable
 // (src/server/inventory/jobs.ts), so a crash or a redeploy mid-job only delays work.
@@ -14,6 +15,7 @@ const JOBS = [
   { name: "email-digest", cron: "0 6 * * *", run: () => sendDigests() },
   { name: "email-instant", cron: "* * * * *", run: () => sendInstantEmails() },
   { name: "approval-sla", cron: "5 * * * *", run: () => escalateApprovals() },
+  { name: "webhook-deliver", cron: "* * * * *", run: () => deliverWebhooks() }, // Part 11, doc 24 (retries with backoff)
 ];
 
 async function main() {
